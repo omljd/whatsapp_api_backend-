@@ -59,9 +59,17 @@ class Settings(BaseSettings):
 
     @property
     def engine(self):
-        """Database engine with connection pool settings"""
+        """Database engine with connection pool settings and auto-fix for URL typos"""
+        db_url = self.DATABASE_URL
+        
+        # 🔥 ROBUST FIX: Correct legacy 'postgres://' or truncated 'stgresql://' 
+        if db_url and db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        elif db_url and db_url.startswith("stgresql://"):
+            db_url = "po" + db_url
+            
         return create_engine(
-            self.DATABASE_URL,
+            db_url,
             pool_size=20,
             max_overflow=30,
             pool_timeout=60,
