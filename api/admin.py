@@ -79,6 +79,8 @@ class UserUpdateRequest(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     business_name: Optional[str] = None
+    plan_id: Optional[UUID] = None
+    credits_allocated: Optional[float] = None
 
 # --- Logic ---
 
@@ -681,6 +683,24 @@ async def update_platform_user(
         if data.name is not None: busi_user.name = data.name
         if data.email is not None: busi_user.email = data.email
         if data.business_name is not None: busi_user.business_name = data.business_name
+        
+        # 🔥 FIX: Sync Plan if updated by admin
+        if data.plan_id:
+            plan = db.query(Plan).filter(Plan.plan_id == data.plan_id).first()
+            if plan:
+                busi_user.plan_id = plan.plan_id
+                busi_user.plan_name = plan.name
+                busi_user.consumption_rate = plan.deduction_value
+                # If credits not explicitly provided, use plan default
+                if data.credits_allocated is None:
+                    busi_user.credits_allocated = plan.credits_offered
+                    busi_user.credits_remaining = plan.credits_offered
+                busi_user.plan_expiry = datetime.now(timezone.utc) + timedelta(days=plan.validity_days)
+        
+        if data.credits_allocated is not None:
+            busi_user.credits_allocated = data.credits_allocated
+            busi_user.credits_remaining = data.credits_allocated
+
         db.commit()
         db.refresh(busi_user)
         return {"message": f"Business User {busi_user.name} updated successfully"}
@@ -691,6 +711,22 @@ async def update_platform_user(
         if data.name is not None: reseller.name = data.name
         if data.email is not None: reseller.email = data.email
         if data.business_name is not None: reseller.business_name = data.business_name
+        
+        # 🔥 FIX: Sync Plan for Reseller
+        if data.plan_id:
+            plan = db.query(Plan).filter(Plan.plan_id == data.plan_id).first()
+            if plan:
+                reseller.plan_id = plan.plan_id
+                reseller.plan_name = plan.name
+                if data.credits_allocated is None:
+                    reseller.total_credits = plan.credits_offered
+                    reseller.available_credits = plan.credits_offered
+                reseller.plan_expiry = datetime.now(timezone.utc) + timedelta(days=plan.validity_days)
+
+        if data.credits_allocated is not None:
+            reseller.total_credits = data.credits_allocated
+            reseller.available_credits = data.credits_allocated
+
         db.commit()
         db.refresh(reseller)
         return {"message": f"Reseller {reseller.name} updated successfully"}

@@ -386,19 +386,38 @@ async def payment_callback(
         if order.user_type == "business":
             user = db.query(BusiUser).filter(BusiUser.busi_user_id == order.user_id).first()
             if user:
+                # 🔥 FIX: Sync Plan details for direct purchase
+                plan = db.query(Plan).filter(Plan.name == order.plan_name).first()
+                if plan:
+                    user.plan_id = plan.plan_id
+                    user.plan_name = plan.name
+                    user.consumption_rate = plan.deduction_value
+                    user.plan_expiry = datetime.now(timezone.utc) + timedelta(days=plan.validity_days)
+                else:
+                    user.plan_name = order.plan_name
+                    user.plan_expiry = datetime.now(timezone.utc) + timedelta(days=365)
+                
                 user.credits_remaining = (user.credits_remaining or 0) + order.credits
                 user.credits_allocated = (user.credits_allocated or 0) + order.credits
-                user.plan_name = order.plan_name
-                user.plan_expiry = datetime.now(timezone.utc) + timedelta(days=365)
                 current_balance = user.credits_remaining
         elif order.user_type == "reseller":
             reseller = db.query(Reseller).filter(Reseller.reseller_id == order.user_id).first()
             if reseller:
+                # 🔥 FIX: Sync Plan details for Reseller
+                plan = db.query(Plan).filter(Plan.name == order.plan_name).first()
+                if plan:
+                    reseller.plan_id = plan.plan_id
+                    reseller.plan_name = plan.name
+                    reseller.plan_expiry = datetime.now(timezone.utc) + timedelta(days=plan.validity_days)
+                else:
+                    reseller.plan_name = order.plan_name
+                    reseller.plan_expiry = datetime.now(timezone.utc) + timedelta(days=365)
+
                 reseller.available_credits = (reseller.available_credits or 0) + order.credits
                 reseller.total_credits = (reseller.total_credits or 0) + order.credits
                 current_balance = reseller.available_credits
         else:
-            # Admin purchase (buy for self doesn't have a wallet, but we mark as success)
+            # Admin purchase
             current_balance = 0
             logger.info(f"Admin purchase success: {order.txnid}")
         
@@ -428,7 +447,7 @@ async def payment_callback(
             
         if target_user:
             if not is_reseller:
-                # 🔥 NEW: Dynamic Plan Sync for Business User via Razorpay
+                # 🔥 Already exists but ensuring consistent logic
                 plan = db.query(Plan).filter(Plan.name == order.plan_name).first()
                 if plan:
                     target_user.plan_id = plan.plan_id
