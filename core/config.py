@@ -51,7 +51,8 @@ class Settings(BaseSettings):
     GOOGLE_SHEETS_WEBHOOK_SECRET: Optional[str] = None
 
     # WhatsApp Engine
-    WHATSAPP_ENGINE_URL: str = "https://whatsapp-platfrom-engine1.onrender.com"
+    import os
+    WHATSAPP_ENGINE_URL: str = os.getenv("WHATSAPP_ENGINE_URL", "https://whatsapp-engine-94rt.onrender.com")
 
     @property
     def WHATSAPP_ENGINE_BASE_URL(self) -> str:
