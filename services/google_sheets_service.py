@@ -115,23 +115,35 @@ class GoogleSheetsService:
             if env_json:
                 try:
                     info = json.loads(env_json)
+                    logger.info("✅ Using Google Service Account credentials from environment variable")
                     return Credentials.from_service_account_info(info, scopes=SCOPES)
                 except Exception as e:
                     logger.error(f"Failed to load credentials from GOOGLE_SERVICE_ACCOUNT_JSON env var: {e}")
 
             # 2. Try Local File
-            if not os.path.exists(CREDENTIALS_FILE) or not getattr(self, 'has_real_credentials', False):
+            if not os.path.exists(CREDENTIALS_FILE):
+                logger.error(f"Service Account JSON not found at: {os.path.abspath(CREDENTIALS_FILE)}")
+                return None
+
+            # Check if file has real credentials or placeholders
+            try:
+                with open(CREDENTIALS_FILE, 'r') as f:
+                    creds_data = f.read()
+                if "REPLACE_WITH_YOUR_REAL" in creds_data:
+                    logger.warning("Credentials file contains placeholders, not real credentials")
+                    return None
+            except Exception as e:
+                logger.error(f"Error reading credentials file: {e}")
                 return None
 
             creds = Credentials.from_service_account_file(
                 CREDENTIALS_FILE, 
                 scopes=SCOPES
             )
+            logger.info(f"✅ Using Google Service Account credentials from file: {CREDENTIALS_FILE}")
             return creds
         except Exception as e:
-            # Only log if we thought we had real credentials
-            if getattr(self, 'has_real_credentials', False):
-                logger.error(f"Failed to load Service Account credentials: {e}")
+            logger.error(f"Failed to load Service Account credentials: {e}")
             return None
 
     # Helper to get authenticated service

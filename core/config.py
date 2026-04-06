@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     GOOGLE_SHEETS_REDIRECT_URI: Optional[str] = None
     GOOGLE_SHEETS_SCOPES: str = "https://www.googleapis.com/auth/spreadsheets.readonly"
     GOOGLE_SHEETS_WEBHOOK_SECRET: Optional[str] = None
+    GOOGLE_SERVICE_ACCOUNT_JSON: Optional[str] = None
 
     # WhatsApp Engine
     WHATSAPP_ENGINE_URL: str = os.getenv("WHATSAPP_ENGINE_URL", "https://whatsapp-engine-94rt.onrender.com")
