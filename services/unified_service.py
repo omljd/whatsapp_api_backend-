@@ -236,6 +236,24 @@ class UnifiedWhatsAppService:
                 
                 # 🔥 DEDUCT CREDITS
                 try:
+                    # 4. CREATE DATABASE RECORD
+                    from models.message import Message, MessageMode, ChannelType, MessageType as ModelMessageType, MessageStatus
+                    db_message = Message(
+                        message_id=message_id or str(uuid.uuid4()),
+                        busi_user_id=str(device.busi_user_id),
+                        channel=ChannelType.WHATSAPP,
+                        mode=MessageMode.UNOFFICIAL,
+                        sender_number=str(device.device_id),
+                        receiver_number=to,
+                        message_type=ModelMessageType.TEXT,
+                        message_body=message,
+                        status=MessageStatus.SENT,
+                        credits_used=1,
+                        sent_at=datetime.utcnow(),
+                        created_at=datetime.utcnow()
+                    )
+                    self.db.add(db_message)
+
                     self.message_usage_service.deduct_credits(
                         busi_user_id=str(device.busi_user_id),
                         message_id=message_id or f"unified-{uuid.uuid4().hex[:8]}",
@@ -243,7 +261,7 @@ class UnifiedWhatsAppService:
                     )
                     self.db.commit()
                 except Exception as credit_err:
-                    logger.error(f"⚠️ Credit deduction failed for unified send: {str(credit_err)}")
+                    logger.error(f"⚠️ Credit deduction or message logging failed for unified send: {str(credit_err)}")
                 
                 return {
                     "success": True, 
@@ -303,16 +321,35 @@ class UnifiedWhatsAppService:
             logger.info(f"   Media Engine Result: {result}")
             
             if result.get("success"):
-                # 🔥 DEDUCT CREDITS
+                # 🔥 DEDUCT CREDITS & LOG MESSAGE
                 try:
                     message_id = result.get('data', {}).get('messageId') or f"media-{uuid.uuid4().hex[:8]}"
+                    
+                    # CREATE DATABASE RECORD
+                    from models.message import Message, MessageMode, ChannelType, MessageType as ModelMessageType, MessageStatus
+                    db_message = Message(
+                        message_id=message_id,
+                        busi_user_id=str(device.busi_user_id),
+                        channel=ChannelType.WHATSAPP,
+                        mode=MessageMode.UNOFFICIAL,
+                        sender_number=str(device.device_id),
+                        receiver_number=to,
+                        message_type=ModelMessageType.MEDIA,
+                        message_body=caption or "[Media Message]",
+                        status=MessageStatus.SENT,
+                        credits_used=1,
+                        sent_at=datetime.utcnow(),
+                        created_at=datetime.utcnow()
+                    )
+                    self.db.add(db_message)
+
                     self.message_usage_service.deduct_credits(
                         busi_user_id=str(device.busi_user_id),
                         message_id=message_id
                     )
                     self.db.commit()
                 except Exception as credit_err:
-                    logger.error(f"⚠️ Credit deduction failed for unified media send: {str(credit_err)}")
+                    logger.error(f"⚠️ Credit deduction or message logging failed for unified media send: {str(credit_err)}")
             
             return result
             

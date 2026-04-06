@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Header, status
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, func, extract
 from typing import List, Optional
 import json
 import uuid
+from datetime import datetime, timezone
 
 from db.session import get_db
 from models.device import Device, SessionStatus
@@ -305,30 +306,59 @@ async def get_dashboard_graph_data(
     # Get stats for the current year
     current_year = datetime.now().year
     
-    # Group by month
-    stats = db.query(
+    # 1. Query messages from 'messages' table
+    q1 = db.query(
         extract('month', Message.sent_at).label('month'),
-        func.count(Message.message_id).label('total'),
-        func.count(Message.message_id).filter(Message.status.in_(['DELIVERED', 'READ'])).label('delivered')
+        Message.status.label('status')
     ).filter(
-        Message.busi_user_id == user_uuid,
+        Message.busi_user_id == str(user_uuid),
         extract('year', Message.sent_at) == current_year
-    ).group_by('month').order_by('month').all()
+    )
+
+    # 2. Query messages from 'message_logs' (campaigns)
+    from models.campaign import Campaign, MessageLog
+    q2 = db.query(
+        extract('month', MessageLog.created_at).label('month'),
+        MessageLog.status.label('status')
+    ).join(Campaign, MessageLog.campaign_id == Campaign.id).filter(
+        Campaign.busi_user_id == user_uuid,
+        extract('year', MessageLog.created_at) == current_year
+    )
+
+    # Fetch all raw data for aggregation in Python (safer for mixed DB environments like SQLite/PG)
+    messages_rows = q1.all()
+    campaign_rows = q2.all()
     
-    # Month names mapping
+    # Initialize 12 months with zeros
+    monthly_stats = {i: {"sent": 0, "delivered": 0} for i in range(1, 13)}
+    
+    def aggregate_row(row):
+        try:
+            m = int(row.month)
+            if 1 <= m <= 12:
+                monthly_stats[m]["sent"] += 1
+                # Check status (supports both MessageStatus and campaign log strings)
+                status_str = str(row.status or "").upper()
+                if status_str in ['SENT', 'DELIVERED', 'READ', 'SUCCESS', 'MESSAGESTATUS.SENT', 'MESSAGESTATUS.DELIVERED', 'MESSAGESTATUS.READ']:
+                    # We consider Sent/Delivered/Read as "sent" (total)
+                    # And Delivered/Read/Success as "delivered" specifically
+                    if status_str in ['DELIVERED', 'READ', 'SUCCESS', 'MESSAGESTATUS.DELIVERED', 'MESSAGESTATUS.READ']:
+                        monthly_stats[m]["delivered"] += 1
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+    for r in messages_rows: aggregate_row(r)
+    for r in campaign_rows: aggregate_row(r)
+    
+    # Format for frontend chart
     month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    
-    # Transform to UI format
-    # We provide all 12 months, filled with zeros where no data
     result = []
-    stats_dict = {int(s.month): s for s in stats}
     
     for i in range(1, 13):
-        month_stat = stats_dict.get(i)
         result.append({
             "name": month_names[i-1],
-            "sent": month_stat.total if month_stat else 0,
-            "delivered": month_stat.delivered if month_stat else 0
+            "sent": monthly_stats[i]["sent"],
+            "delivered": monthly_stats[i]["delivered"]
         })
         
     return result
