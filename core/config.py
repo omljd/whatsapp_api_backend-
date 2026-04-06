@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
 from sqlalchemy import create_engine
+import os
 
 
 class Settings(BaseSettings):
@@ -51,7 +52,6 @@ class Settings(BaseSettings):
     GOOGLE_SHEETS_WEBHOOK_SECRET: Optional[str] = None
 
     # WhatsApp Engine
-    import os
     WHATSAPP_ENGINE_URL: str = os.getenv("WHATSAPP_ENGINE_URL", "https://whatsapp-engine-94rt.onrender.com")
 
     @property
