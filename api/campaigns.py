@@ -202,8 +202,11 @@ async def start_campaign(
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to process sheet for campaign {campaign_id}: {e}")
-            raise HTTPException(status_code=400, detail=f"Failed to fetch sheet data: {str(e)}")
+            msg = str(e)
+            if "Service Account" in msg or "placeholder" in msg.lower():
+                msg = "Google Sheets credentials are not set up. Please update credentials/google-service-account.json with your real Service Account key."
+            logger.error(f"Failed to process sheet for campaign {campaign_id}: {msg}")
+            raise HTTPException(status_code=400, detail=msg)
 
     # 3. Trigger Service Start
     try:

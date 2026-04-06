@@ -291,6 +291,34 @@ class GoogleSheetsAutomationServiceUnofficial:
             row_data = row_info['data']
             row_number = row_info['row_number']
             
+            # 🔥 NEW: Skip Empty Rows (Filter out filler rows at the bottom of sheets)
+            phone_val = self.get_case_insensitive_value(row_data, trigger.phone_column or 'Phone')
+            if not phone_val or str(phone_val).strip() == "":
+                # Don't log as warning, just debug-level skip to keep logs clean
+                logger.debug(f"   Row {row_number}: Skipped (No phone number found)")
+                return {"processed": False, "reason": "empty_row"}
+
+            # 🔥 NEW: Early Local History Check (Crucial for Public Mode)
+            # If we've already handled this row locally, skip it immediately without scanning again.
+            try:
+                # Search for any record for this trigger + row
+                history_exists = self.db.query(GoogleSheetTriggerHistory).filter(
+                    GoogleSheetTriggerHistory.trigger_id == str(trigger.trigger_id)
+                ).all()
+                
+                already_handled_locally = False
+                for h in history_exists:
+                    if h.row_data and h.row_data.get('row_number') == row_number:
+                        already_handled_locally = True
+                        break
+                
+                if already_handled_locally:
+                    # Log the skip clearly so the user knows WHY nothing is happening
+                    logger.info(f"   Row {row_number}: Already handled in DASHBOARD HISTORY. (Skip)")
+                    return {"processed": False, "reason": "already_handled_locally"}
+            except Exception as hist_err:
+                logger.warning(f"   ⚠️ Row {row_number}: Local history check error: {hist_err}")
+
             # Skip if already processed (Only for new_row triggers)
             if trigger.trigger_type == "new_row" and row_number <= trigger.last_processed_row:
                 logger.debug(f"   Row {row_number}: Skipped (Already processed: {trigger.last_processed_row})")
@@ -304,10 +332,9 @@ class GoogleSheetsAutomationServiceUnofficial:
             normalized_status = str(raw_status or "").strip().lower()
             
             # 1. Skip if already marked as finished in the sheet
-            # Broaden the check to catch variations
             ALREADY_HANDLED = ['sent', 'processing', 'success', 'delivered', 'done', 'failed', 'expired']
             if normalized_status in ALREADY_HANDLED:
-                logger.info(f"   Row {row_number}: Handled (Status is '{normalized_status}' in column '{status_column}')")
+                # No need to log this every time for every column
                 return {"processed": False, "reason": "already_handled"}
             
             # 2. Check in-memory lock (prevent concurrency issues)
@@ -414,21 +441,21 @@ class GoogleSheetsAutomationServiceUnofficial:
                             # logger.info(f"   Row {row_number}: Time {send_time} not reached yet. (IST: {current_time_ist})")
                             return {"processed": False, "reason": "time_not_reached"}
                             
-                        # NEW: Ensure it ONLY sends around the exact time, not hours later!
-                        # Window set to 30 seconds to strictly match exact scheduled delivery.
-                        if current_time_ist > send_time + timedelta(seconds=30):
-                            logger.warning(f"   Row {row_number}: Time {send_time} has expired (passed by >30 secs). Will not send.")
+                        # 🔥 RELIABILITY FIX: Expand window to 120 seconds (2 mins) 
+                        # This prevents slow polling from missing rows.
+                        if current_time_ist > send_time + timedelta(seconds=120):
+                            logger.warning(f"   Row {row_number}: Time {send_time} has expired (passed by >120 secs). Will not send.")
                             
                             await self.create_trigger_history(
                                 sheet, trigger, row_number, "", "", TriggerHistoryStatus.FAILED, 
-                                f"Time expired. Window missed for {send_time}",
+                                f"Time expired (Buffer: 120s). Missed window for {send_time}",
                                 device_id=device_id
                             )
-                            # Update sheet status to Expired so we don't loop on it infinitely
+                            # Update sheet status to Expired 
                             await self.update_sheet_status(sheet, row_number, trigger.status_column, 'Expired')
                             
                             return {"processed": True, "reason": "time_expired"}
-                        
+
                         logger.info(f"   Row {row_number}: ⏰ Time Trigger Match! {send_time} <= {current_time_ist}")
                         
                     except Exception as e:
@@ -518,11 +545,17 @@ class GoogleSheetsAutomationServiceUnofficial:
                     logger.warning(f"   ⚠️ Row {row_number}: Could not verify fresh status (skipping safety check): {e}")
 
                 # Step 1: Update sheet status to "Processing"
-                # 🔥 SAFETY: If we can't update to "Processing", DON'T SEND (prevents duplicates)
+                # 🔥 SAFETY: If we can't update to "Processing", we check internal history as a fallback
                 status_updated = await self.update_sheet_status(sheet, row_number, status_column, "Processing", headers)
+                
                 if not status_updated:
-                    logger.warning(f"   ⚠️ Row {row_number}: Skipping send because sheet status could not be updated to 'Processing'")
-                    return {"processed": False, "reason": "status_update_failed"}
+                    # In Public Mode, we already did the history check at the very beginning of process_row_for_trigger.
+                    # If we reached here, it means it's definitely a new row that needs sending.
+                    if not getattr(self.sheets_service, 'has_real_credentials', False):
+                        logger.info(f"   ✨ Row {row_number}: Public Bypass Mode active. Proceeding with send...")
+                    else:
+                        logger.warning(f"   ⚠️ Row {row_number}: Skipping send because sheet status could not be updated to 'Processing'")
+                        return {"processed": False, "reason": "status_update_failed"}
                 
                 # Step 2: Send WhatsApp message via unified service (to handle credits)
                 try:
@@ -601,6 +634,11 @@ class GoogleSheetsAutomationServiceUnofficial:
         Returns True if update succeeded, False otherwise
         """
         try:
+            # 🔥 SILENT SKIP IN PUBLIC MODE: Provide a helpful hint
+            if not getattr(self.sheets_service, 'has_real_credentials', False):
+                 logger.info(f"   ℹ️ Row {row_number}: Status '{status}' saved to your DASHBOARD (Spreadsheet is READ-ONLY in Public Mode).")
+                 return False
+
             # 🔥 FIX: Use worksheet_name (tab name) instead of sheet_name (descriptive name)
             target_worksheet = sheet.worksheet_name or "Sheet1"
             
@@ -618,10 +656,12 @@ class GoogleSheetsAutomationServiceUnofficial:
                 logger.info(f"   📝 Updated row {row_number} status to '{status}' in column '{status_column}'")
                 return True
             else:
-                logger.error(f"   ❌ Failed to update row {row_number} status to '{status}' in column '{status_column}'")
+                # Don't log error here as update_cell already logs it.
                 return False
         except Exception as e:
-            logger.error(f"   ❌ Error updating sheet status for row {row_number}: {e}")
+            # Only log error if we have credentials
+            if getattr(self.sheets_service, 'has_real_credentials', False):
+                logger.error(f"   ❌ Error updating sheet status for row {row_number}: {e}")
             return False
     
     async def create_trigger_history(self, sheet: GoogleSheet, trigger: GoogleSheetTrigger, 

@@ -649,11 +649,14 @@ async def get_sheet_rows(
                 worksheet_name=final_worksheet_name
             )
         except Exception as e:
-            msg = str(e) or "Unknown error fetching sheet data. Check worksheet name."
+            msg = str(e)
+            if "Could not load Service Account credentials" in msg or "placeholders" in msg.lower():
+                msg = "Google Sheets credentials are not set up. Please update credentials/google-service-account.json with your real Service Account key."
+            
             logger.error(f"Failed to fetch data from Google Sheets API: {msg}")
             raise HTTPException(
                 status_code=400,
-                detail={"error": "Sheet Data Error", "message": msg}
+                detail=msg
             )
         
         # Apply pagination if requested
@@ -662,13 +665,50 @@ async def get_sheet_rows(
         elif start_row > 1:
             rows_data = rows_data[start_row-1:]
         
+        # 3. 🧠 SMART MERGE: Override 'Pending' status with real-time history for Public Mode
+        # This makes the dashboard show 'Sent' or 'Expired' even if the public sheet itself is read-only.
+        try:
+            # Get latest history for all rows in this sheet
+            history_rows = db.query(
+                GoogleSheetTriggerHistory.row_data,
+                GoogleSheetTriggerHistory.status
+            ).filter(
+                GoogleSheetTriggerHistory.sheet_id == sheet.id
+            ).all()
+            
+            # Create a lookup map: {row_number: "SENT/EXPIRED/FAILED"}
+            status_map = {}
+            for h_row, h_status in history_rows:
+                if h_row and h_row.get('row_number'):
+                    r_num = h_row.get('row_number')
+                    status_val = h_status.value if hasattr(h_status, 'value') else str(h_status)
+                    # Keep only the 'most advanced' status (Priority: SENT > FAILED > EXPIRED)
+                    status_map[r_num] = status_val
+
+            # Apply overrides to the rows_data
+            status_col_name = "Status" # Default
+            # Try to find the actual status column index from headers
+            status_idx = -1
+            for i, h in enumerate(headers_list):
+                if h.strip().lower() == "status":
+                    status_col_name = h
+                    break
+            
+            for row in rows_data:
+                r_num = row.get('row_number')
+                if r_num in status_map:
+                    # Override the status in the row data before sending to frontend
+                    row['data'][status_col_name] = status_map[r_num].capitalize()
+        except Exception as merge_err:
+            logger.warning(f"Failed to merge row history: {merge_err}")
+
         # Format response
         response_data = {
             "headers": headers_list,
             "rows": [r['data'] for r in rows_data]
         }
         
-        logger.info(f"Successfully fetched {len(rows_data)} rows for sheet {sheet_id}")
+        logger.info(f"Successfully fetched {len(rows_data)} rows for sheet {sheet_id} (Merged {len(status_map) if 'status_map' in locals() else 0} history records)")
         return response_data
         
     except HTTPException:

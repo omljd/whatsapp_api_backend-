@@ -17,6 +17,8 @@ except ImportError:
     HttpError = None
     
 import os
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Define credentials path
 CREDENTIALS_FILE = "credentials/google-service-account.json"
@@ -38,12 +40,30 @@ class GoogleSheetsService:
             
         self.sdk_available = True
         
-        # Verify credentials file exists
+        # Verify credentials file exists and check for placeholders ONCE
+        self.has_real_credentials = False
         if not os.path.exists(CREDENTIALS_FILE):
-             logger.error(f"Service Account JSON not found at: {os.path.abspath(CREDENTIALS_FILE)}")
-             self.sdk_available = False
+             logger.warning(f"Service Account JSON not found at: {os.path.abspath(CREDENTIALS_FILE)}. Using Public Fallback if available.")
         else:
-             logger.info(f"Service Account JSON found at: {os.path.abspath(CREDENTIALS_FILE)}")
+             try:
+                 with open(CREDENTIALS_FILE, 'r') as f:
+                     creds_data = f.read()
+                 if "REPLACE_WITH_YOUR_REAL" in creds_data:
+                     logger.warning("📝 NOTE: Google Sheets is in 'Public Mode' because placeholders are detected in credentials. Status updates (Sent/Processing) will not be saved to your sheet. Use the Guide to enable full access.")
+                     self.has_real_credentials = False
+                 else:
+                     logger.info(f"✅ Service Account JSON found at: {os.path.abspath(CREDENTIALS_FILE)}")
+                     self.has_real_credentials = True
+             except Exception as e:
+                 logger.error(f"Error reading credentials file: {e}")
+                 self.has_real_credentials = False
+
+        # 🔥 SILENCE SSL WARNINGS
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except:
+            pass
 
     def normalize_sheet_status(self, status) -> str:
         """
@@ -85,18 +105,33 @@ class GoogleSheetsService:
         return normalized_status in eligible_statuses
 
     def get_service_account_credentials(self) -> Optional[Credentials]:
-        """Load credentials from Service Account JSON file"""
+        """Load credentials from Environment Variable or Service Account JSON file"""
         if not self.sdk_available:
             return None
             
         try:
+            # 1. Try Environment Variable First (Best for Render/Vercel)
+            env_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+            if env_json:
+                try:
+                    info = json.loads(env_json)
+                    return Credentials.from_service_account_info(info, scopes=SCOPES)
+                except Exception as e:
+                    logger.error(f"Failed to load credentials from GOOGLE_SERVICE_ACCOUNT_JSON env var: {e}")
+
+            # 2. Try Local File
+            if not os.path.exists(CREDENTIALS_FILE) or not getattr(self, 'has_real_credentials', False):
+                return None
+
             creds = Credentials.from_service_account_file(
                 CREDENTIALS_FILE, 
                 scopes=SCOPES
             )
             return creds
         except Exception as e:
-            logger.error(f"Failed to load Service Account credentials: {e}")
+            # Only log if we thought we had real credentials
+            if getattr(self, 'has_real_credentials', False):
+                logger.error(f"Failed to load Service Account credentials: {e}")
             return None
 
     # Helper to get authenticated service
@@ -132,19 +167,46 @@ class GoogleSheetsService:
     def get_available_sheets(self, credentials: Optional[Credentials], spreadsheet_id: str) -> List[str]:
         """Fetch all available worksheet names from the spreadsheet"""
         try:
-            # Using self.get_service() instead of get_sheets_service which isn't defined
-            service = self.get_service()
-            spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-            
-            return [
-                sheet.get('properties', {}).get('title', 'Unknown')
-                for sheet in spreadsheet.get('sheets', [])
-            ]
+            # 1. Try official API first (Highest accuracy)
+            creds = credentials or self.get_service_account_credentials()
+            if creds:
+                service = build('sheets', 'v4', credentials=creds)
+                spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+                return [sheet.get('properties', {}).get('title', 'Unknown') for sheet in spreadsheet.get('sheets', [])]
         except Exception as e:
-            logger.error(f"Failed to get available sheets for {spreadsheet_id}: {e}")
-            if "403" in str(e) or "permission" in str(e).lower():
-                raise Exception(f"Permission Denied. Please share your spreadsheet with: {self.get_service_account_email()}")
-            raise Exception(f"Spreadsheet not accessible: {str(e)}")
+            logger.warning(f"⚠️  API Metadata fetch failed for {spreadsheet_id}: {e}. Trying PUBLIC SCANNER fallback.")
+
+        # 🔥 2. PUBLIC SCANNER FALLBACK (Regex HTML Scraper)
+        # This scans the public webpage of the sheet for tab names
+        try:
+            import requests
+            import re
+            
+            public_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+            res = requests.get(public_url, timeout=15)
+            
+            if res.status_code == 200:
+                html = res.text
+                # Google Sheets stores tab names in a JSON structure like: {"name":"Sheet1","id":0}
+                # We'll use regex to extract all "name" values associated with sheets
+                tab_matches = re.findall(r'\{"name":"([^"]+)","id":(\d+)\}', html)
+                
+                if tab_matches:
+                    tab_names = [match[0] for match in tab_matches]
+                    # Filter out common false positives if necessary, but usually this is accurate
+                    logger.info(f"✨ Public Scanner Success: Found {len(tab_names)} tabs: {tab_names}")
+                    return tab_names
+                else:
+                    # Final fallback if regex fails but page loaded
+                    logger.warning(f"⚠️  Scanned public page but found no tabs. Defaulting to 'Sheet1'.")
+                    return ["Sheet1"]
+            else:
+                 logger.error(f"❌ Public page not accessible (Status {res.status_code}). Sheet might be Private.")
+        except Exception as scan_e:
+            logger.error(f"❌ Public Scanner failed: {scan_e}")
+
+        # If all fail, let the user know why
+        raise Exception("Spreadsheet not accessible: Could not load Service Account credentials AND sheet is not Public.")
             
     def get_service_account_email(self) -> str:
         """Helper to get the email from credentials file for sharing instructions"""
@@ -191,8 +253,12 @@ class GoogleSheetsService:
                                    worksheet_name: str = "Sheet1", credentials=None) -> Tuple[List[Dict[str, Any]], List[str]]:
         """Get sheet data as list of dictionaries with headers using Service Account (with caching)"""
         
+        # 🔥 INITIALIZE Worksheet Name early for fallback access
+        final_worksheet_name = worksheet_name.strip() if worksheet_name else "Sheet1"
+        final_worksheet_name = final_worksheet_name.strip("'\"")
+
         # 1. 🕒 CHECK CACHE FIRST (Prevents slamming Google API with 25 concurrent requests)
-        cache_key = f"{spreadsheet_id}:{worksheet_name}"
+        cache_key = f"{spreadsheet_id}:{final_worksheet_name}"
         current_time = datetime.now()
         
         if cache_key in self._sheet_cache:
@@ -303,8 +369,86 @@ class GoogleSheetsService:
             return row_results, headers
             
         except Exception as e:
-            logger.error(f"Failed to get fresh sheet data: {e}")
-            raise
+            # 🔥 SILENT FALLBACK: If we know we are in public mode, don't spam warnings
+            if not getattr(self, 'has_real_credentials', False):
+                 # logger.debug(f"Public fallback fetch initiated for {spreadsheet_id}")
+                 pass
+            else:
+                 logger.warning(f"⚠️  Credential-based fetch failed, trying PUBLIC FALLBACK: {e}")
+            
+            # 🔥 PUBLIC FALLBACK MODE (CSV Export)
+            # This works if the sheet is shared as "Anyone with the link can view"
+            try:
+                import csv
+                import io
+                import requests
+                import urllib.parse
+                
+                # Construct export URL using the Visualization API which supports ?sheet=NAME
+                safe_sheet_name = urllib.parse.quote(final_worksheet_name)
+                export_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq?tqx=out:csv&sheet={safe_sheet_name}"
+                
+                logger.info(f"🌐 Attempting Public Data Export (gviz): {export_url}")
+                csv_res = requests.get(export_url, timeout=15)
+                
+                if csv_res.status_code != 200:
+                    if "placeholder" in str(e).lower() or "credentials" in str(e).lower():
+                        raise Exception("Google Sheets credentials are not set up AND the sheet is not Public. Please follow GOOGLE_SERVICE_ACCOUNT_SETUP.md OR share your sheet as 'Anyone with the link can view'.")
+                    else:
+                        raise e
+                
+                # Parse CSV
+                content = csv_res.content.decode('utf-8')
+                csv_reader = csv.reader(io.StringIO(content))
+                values = list(csv_reader)
+                
+                if not values:
+                    return [], []
+                    
+                # 🧠 STRICT COLUMN FILTER: Only include columns that have an EXPLICIT HEADER
+                raw_headers = values[0]
+                active_indices = []
+                headers = []
+                
+                # Identify only columns with names (ignore ghost columns completely)
+                for j, header in enumerate(raw_headers):
+                    header_str = str(header).strip()
+                    if header_str:
+                        active_indices.append(j)
+                        headers.append(header_str)
+                
+                # Fallback: if no headers found at all, use all columns with data
+                if not headers:
+                    for j, header in enumerate(raw_headers):
+                        has_data = any(len(row) > j and str(row[j]).strip() != "" for row in values[1:])
+                        if has_data:
+                            active_indices.append(j)
+                            headers.append(str(header).strip() if str(header).strip() else f"column_{j+1}")
+
+                # Construct data structure using ONLY active columns
+                row_results = []
+                for i, row in enumerate(values[1:]):
+                    # Skip completely empty rows
+                    if not any(cell and str(cell).strip() != "" for cell in row):
+                        continue
+                        
+                    row_dict = {}
+                    row_num = i + 2
+                    for k, col_idx in enumerate(active_indices):
+                        header_name = headers[k]
+                        row_dict[header_name] = row[col_idx] if col_idx < len(row) else ""
+                    
+                    row_results.append({'row_number': row_num, 'data': row_dict})
+                
+                logger.info(f"✨ Public Fallback Success: Fetched {len(row_results)} rows and {len(headers)} NAMED columns.")
+                return row_results, headers
+                
+            except Exception as public_e:
+                logger.error(f"❌ Public Fallback failed too: {public_e}")
+                # Re-raise the original credential error if public fallback also fails
+                if "placeholder" in str(e).lower():
+                    raise Exception("Google Sheets credentials are not set up. Please update credentials/google-service-account.json with your real Service Account key OR share your sheet as 'Anyone with the link can view'.")
+                raise e
         finally:
             # Clean up response if it exists
             if response is not None:
