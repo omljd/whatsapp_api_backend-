@@ -19,7 +19,8 @@ class Campaign(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     busi_user_id = Column(UUID(as_uuid=True), ForeignKey("businesses.busi_user_id", ondelete="CASCADE"), nullable=False)
-    sheet_id = Column(UUID(as_uuid=True), ForeignKey("google_sheets.id", ondelete="CASCADE"), nullable=False)
+    sheet_id = Column(UUID(as_uuid=True), ForeignKey("google_sheets.id", ondelete="CASCADE"), nullable=True)
+    source_file_url = Column(Text, nullable=True) # Path to uploaded CSV/Excel data source
     name = Column(String(255), nullable=True) # Optional name for convenience
     status = Column(Enum(CampaignStatus), default=CampaignStatus.PENDING)
     session_number = Column(Integer, default=1)  # 1-4

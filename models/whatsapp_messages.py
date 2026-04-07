@@ -31,7 +31,7 @@ class WhatsAppMessages(Base):
     message_type = Column(String(50), default="text")  # text, image, document, etc.
     
     # Message metadata
-    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    timestamp = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     from_me = Column(Boolean, nullable=False, default=False)  # True if sent by us
     
     # Read status
@@ -43,8 +43,8 @@ class WhatsAppMessages(Base):
     thumbnail_url = Column(Text, nullable=True)  # Thumbnail URL
     
     # Timestamps
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     device = relationship("Device", back_populates="whatsapp_messages")

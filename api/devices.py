@@ -98,6 +98,14 @@ async def get_connected_unofficial_device(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
 
+        # 🔥 FORCE SYNC: Ensure we have the latest status from engine before returning connected devices
+        try:
+            from services.device_sync_service import device_sync_service
+            device_sync_service.sync_user_devices(device_service.db, user_id)
+            logger.info(f"🔄 Synced devices for user {user_id} before returning connected list")
+        except Exception as sync_err:
+            logger.warning(f"⚠️ Auto-sync failed for user {user_id}: {sync_err}")
+
         # Search for devices with 'connected' status only
         devices = device_service.get_user_devices(user_id, session_status="connected")
             

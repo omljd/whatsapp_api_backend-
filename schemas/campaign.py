@@ -20,7 +20,8 @@ class MessageTemplateCreate(BaseModel):
     delay_override: Optional[int] = None
 
 class CampaignCreateRequest(BaseModel):
-    sheet_id: UUID
+    sheet_id: Optional[UUID] = None
+    source_file_url: Optional[str] = None
     name: Optional[str] = None
     device_ids: List[UUID] = Field(..., min_length=1, max_length=5)
     templates: List[MessageTemplateCreate] = Field(..., min_length=1, max_length=5)
@@ -60,7 +61,8 @@ class MessageLogResponse(BaseModel):
 class CampaignResponse(BaseModel):
     id: UUID
     busi_user_id: UUID
-    sheet_id: UUID
+    sheet_id: Optional[UUID] = None
+    source_file_url: Optional[str] = None
     name: Optional[str] = None
     status: CampaignStatus
     session_number: int

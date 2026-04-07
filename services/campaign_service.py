@@ -39,6 +39,7 @@ class CampaignService:
             campaign = Campaign(
                 busi_user_id=user_id,
                 sheet_id=request_data.sheet_id,
+                source_file_url=request_data.source_file_url, # 🔥 NEW
                 name=request_data.name,
                 status=CampaignStatus.PENDING,
                 media_url=request_data.media_url,

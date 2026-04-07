@@ -335,7 +335,11 @@ async def initiate_payment(
         }
     else:
         error_detail = result.get("error", "Unknown Razorpay error")
-        logger.error(f"Razorpay order creation failed for {user_id}: {error_detail}")
+        logger.error(f"❌ Razorpay order creation failed for {user_id}: {error_detail}")
+        # Log if keys appear empty
+        if not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET:
+            logger.error("🛑 CRITICAL: Razorpay Keys are EMPTY in Backend Settings!")
+        
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
             detail=f"Payment Gateway Error: {error_detail}"

@@ -78,6 +78,7 @@ async def list_campaigns(
 async def create_new_campaign(
     payload: str = Form(...),
     file: Optional[UploadFile] = File(None),
+    data_file: Optional[UploadFile] = File(None), # 🔥 NEW: Data source file (CSV/Excel)
     db: Session = Depends(get_db),
     current_user: BusiUser = Depends(get_current_user)
 ):
@@ -124,10 +125,29 @@ async def create_new_campaign(
             
             logger.info(f"[CREATE_CAMPAIGN] File saved to: {media_url} (Type: {media_type})")
 
-        # 3. Update request with media info
+        # 3. Handle Data Source File Upload if exists
+        source_file_url = None
+        if data_file:
+            logger.info(f"[CREATE_CAMPAIGN] Handling DATA SOURCE file: {data_file.filename}")
+            upload_dir = os.path.join("uploads", "campaign_data")
+            os.makedirs(upload_dir, exist_ok=True)
+            
+            file_ext = os.path.splitext(data_file.filename)[1].lower()
+            unique_filename = f"data_{uuid.uuid4()}{file_ext}"
+            file_path = os.path.join(upload_dir, unique_filename)
+            
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(data_file.file, buffer)
+            
+            source_file_url = os.path.abspath(file_path)
+            logger.info(f"[CREATE_CAMPAIGN] Data source saved to: {source_file_url}")
+
+        # 4. Update request with media and data info
         if media_url:
             request.media_url = media_url
             request.media_type = media_type
+        if source_file_url:
+            request.source_file_url = source_file_url
 
         # NEW: Check Plan/Credits before creating campaign
         check_busi_user_plan(db, str(current_user.busi_user_id))
@@ -161,52 +181,62 @@ async def start_campaign(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found or unauthorized")
 
-    if not campaign.sheet_id:
-        raise HTTPException(status_code=400, detail="Google Sheet not linked to this campaign")
+    if not campaign.sheet_id and not campaign.source_file_url:
+        raise HTTPException(status_code=400, detail="No source (Google Sheet or File) linked to this campaign")
 
     # 2. Fetch Sheet Data (Only if PENDING)
     formatted_rows = []
     if campaign.status == CampaignStatus.PENDING:
-        try:
-            sheets_service = GoogleSheetsService()
-            creds = sheets_service.get_service_account_credentials()
-            
-            sheet = db.query(GoogleSheet).filter(GoogleSheet.id == campaign.sheet_id).first()
-            if not sheet:
-                raise HTTPException(status_code=404, detail="Google Sheet metadata not found")
+        if campaign.sheet_id:
+            try:
+                sheets_service = GoogleSheetsService()
+                creds = sheets_service.get_service_account_credentials()
+                
+                sheet = db.query(GoogleSheet).filter(GoogleSheet.id == campaign.sheet_id).first()
+                if not sheet:
+                    raise HTTPException(status_code=404, detail="Google Sheet metadata not found")
 
-            rows_data, _ = sheets_service.get_sheet_data_with_headers(
-                spreadsheet_id=sheet.spreadsheet_id, 
-                worksheet_name=sheet.worksheet_name or "Sheet1",
-                credentials=creds
-            )
-            
-            phone_col = "phone"
-            if sheet.trigger_config and isinstance(sheet.trigger_config, dict):
-                phone_col = sheet.trigger_config.get("phone_column", phone_col)
+                rows_data, _ = sheets_service.get_sheet_data_with_headers(
+                    spreadsheet_id=sheet.spreadsheet_id, 
+                    worksheet_name=sheet.worksheet_name or "Sheet1",
+                    credentials=creds
+                )
                 
-            for row in rows_data:
-                data = row.get("data", {})
-                actual_phone = data.get(phone_col) or data.get("Phone") or data.get("Phone Number")
-                
-                # 🔥 Skip row if it has no phone number (Don't count it in Total)
-                if not actual_phone:
-                    continue
+                phone_col = "phone"
+                if sheet.trigger_config and isinstance(sheet.trigger_config, dict):
+                    phone_col = sheet.trigger_config.get("phone_column", phone_col)
                     
-                valid_phone = sheets_service.validate_phone_number(actual_phone)
+                for row in rows_data:
+                    data = row.get("data", {})
+                    actual_phone = data.get(phone_col) or data.get("Phone") or data.get("Phone Number")
+                    
+                    if not actual_phone:
+                        continue
+                        
+                    valid_phone = sheets_service.validate_phone_number(actual_phone)
+                    
+                    formatted_rows.append({
+                        "phone": valid_phone or actual_phone,
+                        "row_data": data
+                    })
+            except HTTPException:
+                raise
+            except Exception as e:
+                msg = str(e)
+                if "Service Account" in msg or "placeholder" in msg.lower():
+                    msg = "Google Sheets credentials are not set up. Please update credentials/google-service-account.json."
+                logger.error(f"Failed to process sheet for campaign {campaign_id}: {msg}")
+                raise HTTPException(status_code=400, detail=msg)
                 
-                formatted_rows.append({
-                    "phone": valid_phone or actual_phone,
-                    "row_data": data
-                })
-        except HTTPException:
-            raise
-        except Exception as e:
-            msg = str(e)
-            if "Service Account" in msg or "placeholder" in msg.lower():
-                msg = "Google Sheets credentials are not set up. Please update credentials/google-service-account.json with your real Service Account key."
-            logger.error(f"Failed to process sheet for campaign {campaign_id}: {msg}")
-            raise HTTPException(status_code=400, detail=msg)
+        elif campaign.source_file_url:
+            # 🔥 NEW: Process File-Based Campaign (CSV/Excel)
+            try:
+                from utils.file_parser import get_recipient_data_from_file
+                logger.info(f"📁 Processing data file source: {campaign.source_file_url}")
+                formatted_rows = get_recipient_data_from_file(campaign.source_file_url)
+            except Exception as fe:
+                logger.error(f"Failed to process file {campaign.source_file_url}: {fe}")
+                raise HTTPException(status_code=400, detail=str(fe))
 
     # 3. Trigger Service Start
     try:

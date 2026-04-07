@@ -7,8 +7,16 @@ logger = logging.getLogger(__name__)
 
 class PaymentService:
     def __init__(self):
+        self.key_id = settings.RAZORPAY_KEY_ID or ""
+        self.key_secret = settings.RAZORPAY_KEY_SECRET or ""
+        
+        if not self.key_id or not self.key_secret:
+             logger.error(f"⚠️ Razorpay Keys are MISSING from Settings! ID: {len(self.key_id)} chars, Secret: {len(self.key_secret)} chars")
+        else:
+             logger.info(f"✅ Razorpay Payment Service initialized with Key ID: {self.key_id[:8]}... (Total: {len(self.key_id)} chars)")
+             
         self.client = razorpay.Client(
-            auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+            auth=(self.key_id, self.key_secret)
         )
 
     def create_order(self, amount: float, currency: str = "INR", notes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

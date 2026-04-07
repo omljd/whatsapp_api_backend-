@@ -179,22 +179,23 @@ class DeviceSyncService:
                     db_device = next((d for d in existing_db_devices if str(d.device_id) == device_uuid), None)
                     
                     if db_device:
-                        # Update session status to match Engine
-                        engine_status = engine_device.get("status", "unknown")
-                        new_session_status = SessionStatus.connected if engine_status == "connected" else SessionStatus.disconnected
+                        # Map engine status to database status
+                        engine_status = engine_device.get("status", "unknown").lower()
+                        new_session_status = SessionStatus.disconnected
                         
-                        # IMPORTANT: Do NOT set unofficial devices to disconnected based on engine heartbeat
-                        # Only allow explicit logout/delete to change status
-                        is_unofficial = "official whatsapp" not in db_device.device_name.lower()
-                        if is_unofficial and db_device.session_status == SessionStatus.connected:
-                            logger.info(f"   🛡️ Protected unofficial device {device_id} from auto-disconnect")
-                            continue
+                        if engine_status == "connected":
+                            new_session_status = SessionStatus.connected
+                        elif engine_status in ["qr_ready", "qr_generated", "scanning"]:
+                            new_session_status = SessionStatus.qr_ready
+                        elif engine_status == "connecting":
+                            new_session_status = SessionStatus.connecting
                         
                         if db_device.session_status != new_session_status:
+                            old_status = db_device.session_status
                             db_device.session_status = new_session_status
                             db_device.updated_at = datetime.utcnow()
-                            updated_devices.append(device_uuid)
-                            logger.info(f"   🔄 Updated device status: {device_uuid} → {new_session_status}")
+                            updated_devices.append(device_id)
+                            logger.info(f"   🔄 Device status updated: {device_id} ({old_status} -> {new_session_status})")
                 
                 synced_devices.append(device_uuid)
             

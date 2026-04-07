@@ -270,7 +270,7 @@ class GoogleSheetsAutomationServiceUnofficial:
                 max_row = max(row.get('row_number', 0) for row in rows_data)
                 trigger.last_processed_row = max(trigger.last_processed_row, max_row)
             
-            trigger.last_triggered_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            trigger.last_triggered_at = datetime.now(timezone.utc)
             self.db.commit()
             
             logger.info(f"✅ [AUTOMATION] Trigger {trigger.trigger_id} complete: {match_count} matches, {processed_count} successfully processed.")
@@ -681,7 +681,7 @@ class GoogleSheetsAutomationServiceUnofficial:
                 message_content=message,
                 status=status.value,
                 error_message=error_message,
-                triggered_at=datetime.now(timezone.utc).replace(tzinfo=None),  # ✅ Consistent UTC/IST handling
+                triggered_at=datetime.now(timezone.utc),  # ✅ Consistent UTC/IST handling
                 row_data={
                     "row_number": row_number,
                     "trigger_id": str(trigger.trigger_id),
