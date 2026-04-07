@@ -738,12 +738,13 @@ class WhatsAppEngineService:
                     # 🔥 ZERO-DEPENDENCY FIX: Send as raw binary body with metadata in headers
                     # This avoids needing 'multer' on the engine side
                     # Headers must be Latin-1/ASCII safe, so we sanitize them
+                    import urllib.parse
                     def sanitize_header(val):
                         if not val: return ""
-                        # 🔥 CRITICAL: Modern HTTP clients block newlines/returns in header values
-                        # We must strip them or replace with space to avoid 'Invalid header value'
-                        sanitized = str(val).encode('ascii', 'ignore').decode('ascii')
-                        return sanitized.replace("\r", " ").replace("\n", " ").strip()
+                        # 🔥 CRITICAL: Use URL encoding to support Marathi/Unicode in headers
+                        # This avoids the 'Invalid header value' error while preserving characters
+                        stripped = str(val).replace("\r", " ").replace("\n", " ").strip()
+                        return urllib.parse.quote(stripped)
 
                     headers = {
                         "X-WA-To": sanitize_header(normalized_to),
