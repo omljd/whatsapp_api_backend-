@@ -56,7 +56,8 @@ class Settings(BaseSettings):
 
     @property
     def WHATSAPP_ENGINE_BASE_URL(self) -> str:
-        return self.WHATSAPP_ENGINE_URL
+        # 🔥 ROBUST: Ensure URL is stripped of any hidden newlines or whitespace
+        return (self.WHATSAPP_ENGINE_URL or "").strip()
 
     @property
     def engine(self):

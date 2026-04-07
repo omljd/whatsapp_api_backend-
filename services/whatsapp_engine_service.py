@@ -740,7 +740,10 @@ class WhatsAppEngineService:
                     # Headers must be Latin-1/ASCII safe, so we sanitize them
                     def sanitize_header(val):
                         if not val: return ""
-                        return str(val).encode('ascii', 'ignore').decode('ascii').strip()
+                        # 🔥 CRITICAL: Modern HTTP clients block newlines/returns in header values
+                        # We must strip them or replace with space to avoid 'Invalid header value'
+                        sanitized = str(val).encode('ascii', 'ignore').decode('ascii')
+                        return sanitized.replace("\r", " ").replace("\n", " ").strip()
 
                     headers = {
                         "X-WA-To": sanitize_header(normalized_to),
