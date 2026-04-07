@@ -213,14 +213,34 @@ class GoogleSheetsAutomationServiceUnofficial:
             # We only need to check the device if we have something that MIGHT send.
             # (Note: In trigger mode, we iterate rows below)
             
+            # Identify message owner (fallback to trigger.user_id if no sheet)
+            triggered_by_user_id = trigger.user_id or (sheet.user_id if sheet else None)
+            
+            if not triggered_by_user_id:
+                logger.error(f"   ❌ Trigger {trigger.trigger_id} has no user_id or sheet associated - skipping")
+                return
+
             # For better visibility, let's log the trigger start
-            logger.info(f"🎯 [AUTOMATION] Processing Trigger: {trigger.trigger_id} ({trigger.trigger_type}) for user {sheet.user_id}")
+            logger.info(f"🎯 [AUTOMATION] Processing Trigger: {trigger.trigger_id} ({trigger.trigger_type}) for user {triggered_by_user_id}")
+            
+            # 🔥 GLOBAL SCHEDULING CHECK
+            if trigger.trigger_type == "time" and trigger.scheduled_at:
+                ist_offset = timedelta(hours=5, minutes=30)
+                now_utc = datetime.now(timezone.utc)
+                current_time_ist = now_utc + ist_offset
+                
+                # Check if it's too early
+                if current_time_ist < trigger.scheduled_at.replace(tzinfo=timezone.utc if trigger.scheduled_at.tzinfo else None):
+                    # logger.info(f"   ⏳ Scheduled for {trigger.scheduled_at.strftime('%Y-%m-%d %H:%M:%S')}. Waiting...")
+                    return
+                else:
+                    logger.info(f"   🚀 Global schedule reached for {trigger.trigger_id} ({trigger.scheduled_at})!")
             
             # Get Device ID - Handle fallback logic once per poll if rows exist
             active_device_id = device_id
             
             logger.info(f"🔍 [AUTOMATION] Validating device {active_device_id}...")
-            device_validation = validate_device_before_send(self.db, str(active_device_id), user_id=str(sheet.user_id))
+            device_validation = validate_device_before_send(self.db, str(active_device_id), user_id=str(triggered_by_user_id))
             
             if not device_validation["valid"]:
                 logger.warning(f"   ⚠️ Primary device {active_device_id} issues: {device_validation.get('error')}. Checking Fallback...")
@@ -228,12 +248,12 @@ class GoogleSheetsAutomationServiceUnofficial:
                 from sqlalchemy import text as sa_text
                 fallback_candidates = self.db.query(Device).filter(
                     sa_text("busi_user_id::text = :uid")
-                ).params(uid=str(sheet.user_id)).all()
+                ).params(uid=str(triggered_by_user_id)).all()
                 fallback_device_id = None
                 
                 for candidate in fallback_candidates:
                     # Validate candidate against truth (engine) and auto-heal local db status
-                    candidate_valid = validate_device_before_send(self.db, str(candidate.device_id), user_id=str(sheet.user_id))
+                    candidate_valid = validate_device_before_send(self.db, str(candidate.device_id), user_id=str(triggered_by_user_id))
                     if candidate_valid["valid"]:
                         fallback_device_id = str(candidate.device_id)
                         break
@@ -351,12 +371,17 @@ class GoogleSheetsAutomationServiceUnofficial:
 
                 # Handle trigger-specific conditions
                 if trigger.trigger_type == "time":
-                    # Check if send_time is provided and valid
-                    send_time_value = self.get_case_insensitive_value(row_data, trigger.send_time_column)
-                    
-                    if not send_time_value:
-                        logger.warning(f"   Row {row_number}: No send_time value in column '{trigger.send_time_column}'. Available: {list(row_data.keys())}")
-                        return {"processed": False, "reason": "no_send_time"}
+                    # If we have a global scheduled_at, we already checked it in process_single_trigger
+                    # So we just proceed to send this row if it doesn't have its own per-row Send_time column
+                    if trigger.scheduled_at:
+                        logger.info(f"   🎯 Row {row_number}: Processing via Global Schedule")
+                    else:
+                        # Fallback to old per-row column logic if global schedule is not set
+                        send_time_value = self.get_case_insensitive_value(row_data, trigger.send_time_column)
+                        
+                        if not send_time_value:
+                            logger.warning(f"   Row {row_number}: No send_time value in column '{trigger.send_time_column}'.")
+                            return {"processed": False, "reason": "no_send_time"}
                     
                     # Parse send_time and check if it's time to send
                     try:
@@ -675,6 +700,7 @@ class GoogleSheetsAutomationServiceUnofficial:
             from datetime import datetime
             history = GoogleSheetTriggerHistory(
                 sheet_id=sheet.id,
+                user_id=trigger.user_id,
                 trigger_id=str(trigger.trigger_id),  # ✅ Cast UUID to string
                 device_id=str(device_id or trigger.device_id), # ✅ Cast to string
                 phone_number=phone,

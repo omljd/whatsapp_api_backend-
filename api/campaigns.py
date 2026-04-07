@@ -350,6 +350,20 @@ async def get_campaign_logs(
         logger.error(f"Error fetching logs for campaign {campaign_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch campaign logs.")
 
+@router.delete("/{campaign_id}")
+async def delete_campaign(
+    campaign_id: str,
+    db: Session = Depends(get_db),
+    current_user: BusiUser = Depends(get_current_user)
+):
+    """Delete a specific campaign."""
+    validate_uuid(campaign_id, "campaign_id")
+    campaign_service = CampaignService(db)
+    success = campaign_service.delete_campaign(str(current_user.busi_user_id), campaign_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return {"status": "success", "message": "Campaign deleted"}
+
 @router.websocket("/ws/{campaign_id}")
 async def websocket_endpoint(
     websocket: WebSocket, 

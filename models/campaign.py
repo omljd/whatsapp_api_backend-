@@ -27,6 +27,7 @@ class Campaign(Base):
     total_recipients = Column(Integer, default=0)
     sent_count = Column(Integer, default=0)
     failed_count = Column(Integer, default=0)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True) # NEW: For global scheduling
     
     media_url = Column(Text, nullable=True)
     media_type = Column(String(50), nullable=True) # image, video, document, audio

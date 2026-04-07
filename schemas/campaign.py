@@ -28,6 +28,7 @@ class CampaignCreateRequest(BaseModel):
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     warm_mode: Optional[bool] = False # Informative - used in delay
+    scheduled_at: Optional[datetime] = None # NEW: Global scheduling time
 
 # --- Response Schemas ---
 
@@ -70,6 +71,7 @@ class CampaignResponse(BaseModel):
     sent_count: int
     failed_count: int
     
+    scheduled_at: Optional[datetime] = None
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     

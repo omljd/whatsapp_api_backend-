@@ -42,6 +42,7 @@ class CampaignService:
                 source_file_url=request_data.source_file_url, # 🔥 NEW
                 name=request_data.name,
                 status=CampaignStatus.PENDING,
+                scheduled_at=request_data.scheduled_at, # 🔥 NEW: Save global schedule
                 media_url=request_data.media_url,
                 media_type=request_data.media_type
             )
@@ -96,37 +97,38 @@ class CampaignService:
 
             # 2. Prepare recipients if Pending
             if campaign.status == CampaignStatus.PENDING:
-                limit = settings.SESSION_MESSAGE_LIMIT
-                process_rows = rows_data[:limit]
-                campaign.total_recipients = len(process_rows)
+                # Basic sync logic
+                if not rows_data:
+                     raise HTTPException(status_code=400, detail="No recipient data found for this campaign")
                 
-                campaign_tracker[str(campaign_id)] = {
-                    "status": CampaignStatus.RUNNING.value,
-                    "remaining": len(process_rows),
-                    "total": len(process_rows),
-                    "recipients": process_rows
-                }
-                logger.info(f"Prepared {len(process_rows)} recipients for campaign {campaign_id}")
-            else:
-                # Resuming
-                if str(campaign_id) in campaign_tracker:
-                    campaign_tracker[str(campaign_id)]["status"] = CampaignStatus.RUNNING.value
-                else:
-                    return {"status": "error", "message": "Campaign tracker lost. Please restart campaign."}
+                campaign.total_recipients = len(rows_data)
+                self.db.commit()
+
+            # 🔥 NEW: Initialize the in-memory tracker for the worker
+            # The campaign_worker expects this to exist before it starts
+            campaign_tracker[str(campaign_id)] = {
+                "status": CampaignStatus.RUNNING.value,
+                "recipients": rows_data,
+                "total": len(rows_data),
+                "remaining": len(rows_data),
+                "sent": 0,
+                "failed": 0
+            }
+            logger.info(f"Initialized campaign tracker for {campaign_id} with {len(rows_data)} recipients")
 
             campaign.status = CampaignStatus.RUNNING
             self.db.commit()
 
-            # 3. Start background worker task and register it
+            # 3. Create Background Worker Task
             task = asyncio.create_task(campaign_worker(str(campaign.id)))
             await register_worker(str(campaign_id), task)
-
-            return {"status": "success", "message": "Campaign started"}
+            
+            return {"status": "success", "message": "Campaign started in background"}
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error in start_campaign: {e}\n{traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to start campaign: {str(e)}")
+            logger.error(f"Error starting campaign {campaign_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     async def pause_campaign(self, user_id: str, campaign_id: str):
         try:
@@ -134,14 +136,16 @@ class CampaignService:
             if not campaign:
                 raise HTTPException(status_code=404, detail="Campaign not found")
 
-            campaign.status = CampaignStatus.PAUSED
-            self.db.commit()
-            
-            # Update tracker - worker will detect this and stop
+            if campaign.status != CampaignStatus.RUNNING:
+                raise HTTPException(status_code=400, detail="Campaign is not running")
+
+            # Update tracker status first (worker checks this on next iteration)
             if str(campaign_id) in campaign_tracker:
                 campaign_tracker[str(campaign_id)]["status"] = CampaignStatus.PAUSED.value
-            
-            return {"status": "success", "message": "Campaign paused. Worker will stop shortly."}
+                
+            campaign.status = CampaignStatus.PAUSED
+            self.db.commit()
+            return {"status": "success", "message": "Campaign paused"}
         except HTTPException:
             raise
         except Exception as e:
@@ -179,9 +183,6 @@ class CampaignService:
             raise HTTPException(status_code=500, detail=str(e))
 
     async def get_campaign_status(self, user_id: str, campaign_id: str):
-        """
-        Get real-time tracking of campaign from DB and InMemory state
-        """
         try:
             campaign = self.db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.busi_user_id == user_id).first()
             if not campaign:
@@ -196,7 +197,6 @@ class CampaignService:
             tracker = campaign_tracker.get(str(campaign_id))
             if tracker:
                 remaining = tracker.get("remaining", 0)
-                # Use tracker status if it's more up-to-date
                 tracker_status = tracker.get("status")
                 if tracker_status:
                     status = tracker_status
@@ -214,3 +214,28 @@ class CampaignService:
         except Exception as e:
             logger.error(f"Error fetching campaign status: {e}")
             raise HTTPException(status_code=500, detail="Internal server error fetching status")
+
+    def get_user_campaigns(self, user_id: str, skip: int = 0, limit: int = 100) -> List[Campaign]:
+        try:
+            return self.db.query(Campaign).filter(
+                Campaign.busi_user_id == user_id
+            ).order_by(Campaign.created_at.desc()).offset(skip).limit(limit).all()
+        except Exception as e:
+            logger.error(f"Error listing user campaigns: {e}")
+            raise HTTPException(status_code=500, detail="Failed to retrieve campaigns")
+
+    def delete_campaign(self, user_id: str, campaign_id: str) -> bool:
+        try:
+            campaign = self.db.query(Campaign).filter(
+                Campaign.id == campaign_id,
+                Campaign.busi_user_id == user_id
+            ).first()
+            if not campaign:
+                return False
+            self.db.delete(campaign)
+            self.db.commit()
+            return True
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Error deleting campaign: {e}")
+            raise HTTPException(status_code=500, detail="Failed to delete campaign")

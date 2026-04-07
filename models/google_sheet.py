@@ -26,9 +26,10 @@ class GoogleSheetTrigger(Base):
     __tablename__ = "google_sheet_triggers"
 
     # Match actual database schema
-    trigger_id = Column(String, primary_key=True)  # DB uses character varying, not UUID
-    sheet_id = Column(UUID(as_uuid=True), ForeignKey("google_sheets.id"), nullable=False)
-    device_id = Column(String(50), nullable=True)  # 🔥 ADDED: Match database schema, mapped to String to solve character varying mismatch
+    trigger_id = Column(String(50), primary_key=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("businesses.busi_user_id", ondelete="CASCADE"), nullable=True) # NEW: Direct ownership
+    sheet_id = Column(UUID(as_uuid=True), ForeignKey("google_sheets.id"), nullable=True) # Linked sheet (Optional for Files)
+    device_id = Column(String(50), nullable=True)  # WhatsApp Device
     trigger_type = Column(String, nullable=False)  # DB uses character varying, not Enum
     is_enabled = Column(Boolean, default=True)
     last_triggered_at = Column(DateTime(timezone=True), nullable=True)
@@ -43,6 +44,8 @@ class GoogleSheetTrigger(Base):
     message_template = Column(Text, nullable=True)
     send_time_column = Column(String, nullable=True)  # NEW: Send_time column for time-based triggers
     message_column = Column(String, nullable=True)  # NEW: Message column to get content from sheet
+    scheduled_at = Column(DateTime(timezone=True), nullable=True) # NEW: For global scheduling
+    source_file_url = Column(String, nullable=True) # NEW: For file-based triggers
     
     # Legacy fields for compatibility
     trigger_column = Column(String, nullable=True)  # Deprecated, use status_column

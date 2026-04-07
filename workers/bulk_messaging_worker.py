@@ -3,6 +3,7 @@ import logging
 import random
 import traceback
 import uuid
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from core.config import settings
@@ -42,14 +43,39 @@ async def campaign_worker(campaign_id: str):
                 if tracker["status"] in [CampaignStatus.COMPLETED.value, CampaignStatus.FAILED.value]:
                     logger.info(f"✅ Campaign {campaign_id} already {tracker['status']}. Worker exiting.")
                     break
-
+                
                 # Fetch static campaign details needed for this iteration
                 campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
                 if not campaign:
                     logger.error(f"Campaign {campaign_id} not found in DB.")
                     break
 
-                # Dequeue next recipient
+                # 2. Check Global Scheduling (IST)
+                if campaign.scheduled_at:
+                    ist_tz = timezone(timedelta(hours=5, minutes=30))
+                    now_ist = datetime.now(timezone.utc).astimezone(ist_tz)
+                    
+                    # 🔥 FIX: Handle timezone-aware vs naive timestamps from Postgres
+                    # If Postgres Column is DateTime(timezone=True), it often returns UTC
+                    target_time = campaign.scheduled_at
+                    
+                    # If it's UTC, it might have been a naive local time saved as UTC
+                    # We should treat the DATE and TIME parts as intended locally
+                    if target_time.tzinfo and target_time.tzinfo != ist_tz:
+                        # Convert to IST but preserve the intended hour/minute if it was saved naively
+                        # Actually, better to just convert the UTC to IST 
+                        # and see if it's in the past
+                        target_ist = target_time.astimezone(ist_tz)
+                    else:
+                        target_ist = target_time.replace(tzinfo=ist_tz)
+                    
+                    if now_ist < target_ist:
+                        # logger.info(f"⏳ Campaign {campaign_id} scheduled for {target_ist}. Now: {now_ist}. Result: {now_ist < target_ist}")
+                        db.close()
+                        await asyncio.sleep(10)
+                        continue
+
+                # 3. Dequeue next recipient
                 if not tracker.get("recipients"):
                     # Double check if we should be COMPLETED
                     campaign.status = CampaignStatus.COMPLETED
@@ -86,6 +112,8 @@ async def campaign_worker(campaign_id: str):
                 # Content formatting
                 content = template.content
                 for key, val in row_data.items():
+                    # Support both single {key} and double {{key}} formats
+                    content = content.replace(f"{{{{{key}}}}}", str(val))
                     content = content.replace(f"{{{key}}}", str(val))
 
                 # Rate limiting / Delay

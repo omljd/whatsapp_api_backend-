@@ -101,11 +101,62 @@ async def keep_engine_alive():
         # Ping every 10 minutes (Render spins down after 15 mins of inactivity)
         await asyncio.sleep(600)
 
+async def auto_migrate_db():
+    """🚀 [AUTO-HEALER] Smartly adds missing columns only if they don't exist."""
+    # Wait for the server to be fully ready
+    await asyncio.sleep(5)
+    db_logger.info("🛠️ [AUTO-MIGRATE] Checking database synchronization...")
+    
+    migrations = [
+        # (Table, Column, SQL, Description)
+        ("campaigns", "scheduled_at", "ALTER TABLE campaigns ADD COLUMN scheduled_at TIMESTAMP WITH TIME ZONE;", "scheduled_at in campaigns"),
+        ("google_sheet_triggers", "scheduled_at", "ALTER TABLE google_sheet_triggers ADD COLUMN scheduled_at TIMESTAMP WITH TIME ZONE;", "scheduled_at in triggers"),
+        ("google_sheet_triggers", "source_file_url", "ALTER TABLE google_sheet_triggers ADD COLUMN source_file_url TEXT;", "source_file_url in triggers"),
+        ("google_sheet_triggers", "user_id", "ALTER TABLE google_sheet_triggers ADD COLUMN user_id UUID;", "user_id in triggers"),
+    ]
+    
+    from fastapi.concurrency import run_in_threadpool
+    
+    for table, col, sql, desc in migrations:
+        try:
+            def check_and_run(t, c, s):
+                with engine.begin() as conn:
+                    # Check if column exists
+                    curr = conn.execute(text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{t}' AND column_name='{c}';"))
+                    if not curr.first():
+                        db_logger.info(f"   ➕ Adding missing {c} to {t}...")
+                        conn.execute(text("SET statement_timeout = 0;")) # No timeout for the update
+                        conn.execute(text(s))
+            await run_in_threadpool(check_and_run, table, col, sql)
+        except Exception as me:
+            db_logger.warning(f"   ⚠️ [AUTO-MIGRATE] {desc} skipped: {str(me)[:100]}")
+
+    # Special check for nullable sheet_id
+    try:
+        def fix_nullable():
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE google_sheet_triggers ALTER COLUMN sheet_id DROP NOT NULL;"))
+        await run_in_threadpool(fix_nullable)
+    except Exception: pass
+    
+    # Backfill ownership
+    try:
+        def backfill():
+            with engine.begin() as conn:
+                conn.execute(text("UPDATE google_sheet_triggers t SET user_id = s.user_id FROM google_sheets s WHERE t.sheet_id = s.id AND t.user_id IS NULL;"))
+        await run_in_threadpool(backfill)
+    except Exception: pass
+            
+    db_logger.info("✅ [AUTO-MIGRATE] Database is fully synchronized")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for safe background task handling"""
     logger.info("🎬 [STARTUP] WhatsApp Platform Backend initializing...")
-    logger.info(f"⚙️ [CONFIG] Engine URL: {settings.WHATSAPP_ENGINE_BASE_URL}")
+    logger.info(f"⚙️ [CONFIG] Engine URL: {settings.WHATSAPP_ENGINE_URL}")
+    
+    # 1. Run Auto-Migrations in background (to prevent startup hang)
+    asyncio.create_task(auto_migrate_db())
     
     # Database initialization disabled as requested
     # try:

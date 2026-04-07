@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text, and_, or_
 from sqlalchemy.sql import func
+import os
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timedelta, timezone
 import requests
@@ -1338,6 +1339,71 @@ async def get_sheet_templates(
 
 # ==================== TRIGGERS ====================
 
+@router.get("/triggers/all", response_model=List[TriggerResponse])
+async def list_all_user_triggers(
+    current_user: BusiUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """🚀 List ALL triggers for this user across all sheets and files."""
+    try:
+        # Get all sheets owned by user
+        user_sheets = db.query(GoogleSheet).filter(GoogleSheet.user_id == current_user.busi_user_id).all()
+        sheet_ids = [s.id for s in user_sheets]
+        logger.info(f"🔍 Found {len(sheet_ids)} sheets for user {current_user.busi_user_id}")
+        
+        # Get triggers for these sheets OR triggers with source_file_url 
+        # For now, we fetch triggers where sheet_id is in user_sheets OR source_file_url is set
+        # (Assuming file triggers belong to the one who created them)
+        query = db.query(GoogleSheetTrigger)
+        if sheet_ids:
+            query = query.filter(
+                or_(
+                    GoogleSheetTrigger.sheet_id.in_(sheet_ids),
+                    GoogleSheetTrigger.source_file_url != None
+                )
+            )
+        else:
+            query = query.filter(GoogleSheetTrigger.source_file_url != None)
+            
+        triggers = query.order_by(GoogleSheetTrigger.created_at.desc()).all()
+        logger.info(f"🔍 Found {len(triggers)} triggers/automations")
+        
+        # Fetch all device names for mapping
+        user_devices = db.query(Device).filter(Device.busi_user_id == current_user.busi_user_id).all()
+        device_map = {str(d.device_id): d.device_name for d in user_devices}
+        sheet_map = {s.id: s.sheet_name for s in user_sheets}
+        
+        result = []
+        for trigger in triggers:
+            d_name = device_map.get(str(trigger.device_id)) if trigger.device_id else "Official API"
+            s_name = sheet_map.get(trigger.sheet_id) if trigger.sheet_id else f"File: {os.path.basename(trigger.source_file_url or '')[:20]}..."
+            
+            result.append(TriggerResponse(
+                trigger_id=trigger.trigger_id,
+                sheet_id=trigger.sheet_id,
+                device_id=trigger.device_id,
+                trigger_type=trigger.trigger_type,
+                message_template=trigger.message_template,
+                phone_column=trigger.phone_column,
+                status_column=trigger.status_column,
+                trigger_column=trigger.trigger_column,
+                trigger_value=trigger.trigger_value,
+                send_time_column=trigger.send_time_column,
+                message_column=trigger.message_column,
+                webhook_url=trigger.webhook_url,
+                is_enabled=trigger.is_enabled,
+                last_triggered_at=trigger.last_triggered_at,
+                created_at=trigger.created_at,
+                device_name=d_name, 
+                sheet_name=s_name,
+                scheduled_at=trigger.scheduled_at
+            ))
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error listing all triggers: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve triggers")
+
 @router.post("/{sheet_id}/triggers", response_model=TriggerResponse)
 async def create_trigger(
     sheet_id: str,
@@ -1367,7 +1433,7 @@ async def create_trigger(
         # Create the trigger
         new_trigger = GoogleSheetTrigger(
             trigger_id=str(uuid.uuid4()),
-            sheet_id=sheet.id,
+            sheet_id=sheet.id if sheet else None,
             device_id=dev_id_uuid,
             trigger_type=request.trigger_type,
             message_template=request.message_template,
@@ -1379,6 +1445,8 @@ async def create_trigger(
             webhook_url=request.webhook_url,
             send_time_column=request.send_time_column,
             message_column=request.message_column,
+            scheduled_at=request.scheduled_at,
+            source_file_url=request.source_file_url,
             trigger_config={
                 "interval": request.execution_interval or 15,
                 "schedule_column": request.schedule_column

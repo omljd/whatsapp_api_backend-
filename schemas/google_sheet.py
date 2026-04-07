@@ -97,6 +97,8 @@ class TriggerCreateRequest(BaseModel):
     execution_interval: Optional[int] = None
     send_time_column: Optional[str] = None
     message_column: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    source_file_url: Optional[str] = None # NEW: Support for file-based triggers
 
 # ✅ NEW: Official Template Trigger Request for Google Sheets
 class OfficialTemplateTriggerRequest(BaseModel):
@@ -189,7 +191,7 @@ class GoogleSheetMessagingResponse(BaseModel):
 
 class TriggerResponse(BaseModel):
     trigger_id: str  # Changed from UUID to String to match DB
-    sheet_id: UUID  # This references google_sheets.id
+    sheet_id: Optional[UUID] = None  # NEW: Made optional for file-based triggers
     device_id: Optional[UUID] = None  # Made optional for official API triggers
     trigger_type: str  # Changed from Enum to String to match DB
     is_enabled: bool
@@ -205,6 +207,7 @@ class TriggerResponse(BaseModel):
     send_time_column: Optional[str] = None
     message_column: Optional[str] = None
     webhook_url: Optional[str] = None
+    scheduled_at: Optional[datetime] = None # NEW: Global scheduling time
 
     model_config = ConfigDict(from_attributes=True)
 
