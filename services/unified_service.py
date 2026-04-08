@@ -44,7 +44,7 @@ class UnifiedWhatsAppService:
         """Login to WhatsApp service"""
         try:
             # Find user by phone number
-            user = self.db.query(User).filter(User.phone == login_data.phone_number).first()
+            user = self.db.query(BusiUser).filter(BusiUser.phone == login_data.phone_number).first()
             if not user:
                 return LoginResponse(
                     success=False,
@@ -238,8 +238,9 @@ class UnifiedWhatsAppService:
                 try:
                     # 4. CREATE DATABASE RECORD
                     from models.message import Message, MessageMode, ChannelType, MessageType as ModelMessageType, MessageStatus
+                    real_id = message_id or str(uuid.uuid4())
                     db_message = Message(
-                        message_id=message_id or str(uuid.uuid4()),
+                        message_id=real_id,
                         busi_user_id=str(device.busi_user_id),
                         channel=ChannelType.WHATSAPP,
                         mode=MessageMode.UNOFFICIAL,
@@ -420,6 +421,13 @@ class UnifiedWhatsAppService:
             if result["success"]:
                 message.status = "SENT"
                 message.sent_at = datetime.utcnow()
+                
+                # Update Message ID if Baileys provided one
+                if result.get("result") and result["result"].get("messageId"):
+                    message.message_id = result["result"]["messageId"]
+                elif result.get("data") and result["data"].get("messageId"):
+                    message.message_id = result["data"]["messageId"]
+                
                 logger.info(f"Message sent successfully to {receiver} via device {device.device_id}")
             else:
                 message.status = "FAILED"

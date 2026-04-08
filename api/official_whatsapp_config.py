@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Header, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from jose import JWTError  # Ensure this is available or use core.security verify_token
 import logging
 
@@ -108,7 +108,7 @@ async def create_whatsapp_config(
                 existing_device.is_active = True
                 existing_device.deleted_at = None
                 existing_device.session_status = SessionStatus.connected
-                existing_device.last_active = datetime.utcnow()
+                existing_device.last_active = datetime.now(timezone.utc)
                 db.commit()
                 logger.info(f"✅ Updated official WhatsApp device status to connected: {existing_device.device_id} for user {busi_user_id}")
             else:
@@ -121,7 +121,7 @@ async def create_whatsapp_config(
                     device_type=DeviceType.official,
                     session_status=SessionStatus.connected,
                     is_active=True,
-                    last_active=datetime.utcnow()
+                    last_active=datetime.now(timezone.utc)
                 )
                 
                 device_service = DeviceService(db)

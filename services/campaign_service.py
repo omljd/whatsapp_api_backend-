@@ -83,9 +83,6 @@ class CampaignService:
             if not campaign:
                 raise HTTPException(status_code=404, detail="Campaign not found")
 
-            if campaign.status not in [CampaignStatus.PENDING, CampaignStatus.PAUSED]:
-                raise HTTPException(status_code=400, detail=f"Cannot start campaign in state {campaign.status.value}")
-
             # 1. Check if worker is already active via worker_manager
             if await is_worker_active(str(campaign_id)):
                 logger.info(f"Campaign {campaign_id} already has an active worker task.")
@@ -94,6 +91,11 @@ class CampaignService:
                     campaign.status = CampaignStatus.RUNNING
                     self.db.commit()
                 return {"status": "success", "message": "Campaign is already running."}
+
+            # 2. Allow states: PENDING, PAUSED, and (RUNNING if worker is inactive - crash recovery)
+            allowed_states = [CampaignStatus.PENDING, CampaignStatus.PAUSED, CampaignStatus.RUNNING]
+            if campaign.status not in allowed_states:
+                raise HTTPException(status_code=400, detail=f"Cannot start campaign in state {campaign.status.value}")
 
             # 2. Prepare recipients if Pending
             if campaign.status == CampaignStatus.PENDING:
@@ -136,8 +138,16 @@ class CampaignService:
             if not campaign:
                 raise HTTPException(status_code=404, detail="Campaign not found")
 
-            if campaign.status != CampaignStatus.RUNNING:
-                raise HTTPException(status_code=400, detail="Campaign is not running")
+            # 🔥 GRACEFUL STOP: Allow stopping even if not strictly 'Running' (e.g., already paused)
+            if campaign.status == CampaignStatus.PAUSED:
+                return {"status": "success", "message": "Campaign is already stopped."}
+            
+            if campaign.status in [CampaignStatus.COMPLETED, CampaignStatus.FAILED]:
+                return {"status": "success", "message": "Campaign has already finished."}
+            
+            # For other states (like PENDING), we still want to allow stopping/cancelling
+            if campaign.status not in [CampaignStatus.RUNNING, CampaignStatus.PENDING]:
+                raise HTTPException(status_code=400, detail=f"Cannot stop campaign in state {campaign.status}")
 
             # Update tracker status first (worker checks this on next iteration)
             if str(campaign_id) in campaign_tracker:
@@ -158,8 +168,11 @@ class CampaignService:
             if not campaign:
                 raise HTTPException(status_code=404, detail="Campaign not found")
 
-            if campaign.status != CampaignStatus.PAUSED:
-                raise HTTPException(status_code=400, detail="Campaign is not paused")
+            if campaign.status == CampaignStatus.RUNNING:
+                return {"status": "success", "message": "Campaign is already running."}
+            
+            if campaign.status not in [CampaignStatus.PAUSED, CampaignStatus.PENDING]:
+                raise HTTPException(status_code=400, detail=f"Cannot start campaign in state {campaign.status}")
 
             # Update tracker status first
             if str(campaign_id) in campaign_tracker:

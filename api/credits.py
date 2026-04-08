@@ -663,8 +663,8 @@ async def get_my_orders(
             "razorpay_payment_id": order.razorpay_payment_id,
             "allocated_to_user_id": str(order.allocated_to_user_id) if order.allocated_to_user_id else None,
             "is_allocated": order.is_allocated or "pending",
-            "created_at": order.created_at.isoformat() if order.created_at else None,
-            "updated_at": order.updated_at.isoformat() if order.updated_at else None
+            "created_at": order.created_at.replace(tzinfo=timezone.utc).isoformat() if order.created_at and not order.created_at.tzinfo else (order.created_at.isoformat() if order.created_at else None),
+            "updated_at": order.updated_at.replace(tzinfo=timezone.utc).isoformat() if order.updated_at and not order.updated_at.tzinfo else (order.updated_at.isoformat() if order.updated_at else None)
         }
         for order in orders
     ]

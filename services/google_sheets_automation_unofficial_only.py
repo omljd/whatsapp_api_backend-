@@ -187,101 +187,82 @@ class GoogleSheetsAutomationServiceUnofficial:
     async def process_single_trigger(self, sheet: GoogleSheet, trigger: GoogleSheetTrigger, 
                                   rows_data: List[Dict[str, Any]], headers_data: List[str]):
         """
-        Process a single trigger using unofficial WhatsApp API only
+        Process a single trigger using unofficial WhatsApp API only with 🚀 SAFETY FIRST logic:
+        - Round Robin device distribution
+        - Randomized delays between messages
+        - Randomized message templates
         """
         try:
-            # Determine which device to use: trigger-specific or sheet-default
-            device_id = trigger.device_id or sheet.device_id
-            
-            logger.info(f"🎯 Processing trigger {trigger.trigger_id}")
-            logger.info(f"   Using Device ID: {device_id} (Trigger: {trigger.device_id}, Sheet: {sheet.device_id})")
-            logger.info(f"   Phone Column: {trigger.phone_column}")
-            logger.info(f"   Status Column: {trigger.status_column}")
-            logger.info(f"   Trigger Value: {trigger.trigger_value}")
-            
-            # Validate device exists and is connected
-            if not device_id:
-                logger.error(f"   ❌ Trigger {trigger.trigger_id} has no device_id assigned (and no sheet default) - skipping")
-                return
-            
-            # Only proceed if we have rows data to check
-            if not rows_data:
-                # logger.info(f"   ℹ️ Trigger {trigger.trigger_id}: No data in sheet. Skipping.")
-                return
-                
-            # 🔥 OPTIMIZATION: Check for rows first to avoid slamming the Engine health check every 10 seconds
-            # We only need to check the device if we have something that MIGHT send.
-            # (Note: In trigger mode, we iterate rows below)
-            
-            # Identify message owner (fallback to trigger.user_id if no sheet)
+            # 1. Identify all available devices for this user (for Round Robin)
             triggered_by_user_id = trigger.user_id or (sheet.user_id if sheet else None)
-            
             if not triggered_by_user_id:
-                logger.error(f"   ❌ Trigger {trigger.trigger_id} has no user_id or sheet associated - skipping")
+                logger.error(f"   ❌ Trigger {trigger.trigger_id} has no user_id associated - skipping")
                 return
 
-            # For better visibility, let's log the trigger start
-            logger.info(f"🎯 [AUTOMATION] Processing Trigger: {trigger.trigger_id} ({trigger.trigger_type}) for user {triggered_by_user_id}")
+            logger.info(f"🎯 [AUTOMATION] Processing Trigger: {trigger.trigger_id} for user {triggered_by_user_id}")
             
             # 🔥 GLOBAL SCHEDULING CHECK
             if trigger.trigger_type == "time" and trigger.scheduled_at:
                 ist_offset = timedelta(hours=5, minutes=30)
                 now_utc = datetime.now(timezone.utc)
                 current_time_ist = now_utc + ist_offset
-                
-                # Check if it's too early
                 if current_time_ist < trigger.scheduled_at.replace(tzinfo=timezone.utc if trigger.scheduled_at.tzinfo else None):
-                    # logger.info(f"   ⏳ Scheduled for {trigger.scheduled_at.strftime('%Y-%m-%d %H:%M:%S')}. Waiting...")
                     return
-                else:
-                    logger.info(f"   🚀 Global schedule reached for {trigger.trigger_id} ({trigger.scheduled_at})!")
-            
-            # Get Device ID - Handle fallback logic once per poll if rows exist
-            active_device_id = device_id
-            
-            logger.info(f"🔍 [AUTOMATION] Validating device {active_device_id}...")
-            device_validation = validate_device_before_send(self.db, str(active_device_id), user_id=str(triggered_by_user_id))
-            
-            if not device_validation["valid"]:
-                logger.warning(f"   ⚠️ Primary device {active_device_id} issues: {device_validation.get('error')}. Checking Fallback...")
-                # 🔥 BYPASS ORM type coercion - use raw SQL for fallback query
-                from sqlalchemy import text as sa_text
-                fallback_candidates = self.db.query(Device).filter(
-                    sa_text("busi_user_id::text = :uid")
-                ).params(uid=str(triggered_by_user_id)).all()
-                fallback_device_id = None
-                
-                for candidate in fallback_candidates:
-                    # Validate candidate against truth (engine) and auto-heal local db status
-                    candidate_valid = validate_device_before_send(self.db, str(candidate.device_id), user_id=str(triggered_by_user_id))
-                    if candidate_valid["valid"]:
-                        fallback_device_id = str(candidate.device_id)
-                        break
 
-                if fallback_device_id:
-                    logger.info(f"   ✅ Using fallback: {fallback_device_id}")
-                    active_device_id = fallback_device_id
-                else:
-                    logger.error(f"   ❌ No connected devices found for user {sheet.user_id}. Cannot process triggers.")
-                    return
+            # 🔥 GET ALL CONNECTED DEVICES FOR ROUND ROBIN
+            # This makes the sending look more human and distributes the load
+            from models.device import Device, SessionStatus
+            user_devices = self.db.query(Device).filter(
+                Device.busi_user_id == str(triggered_by_user_id),
+                Device.session_status == SessionStatus.connected
+            ).all()
+
+            available_devices = [str(d.device_id) for d in user_devices]
+            
+            # If no connected devices found, try fallback validation for the primary device
+            if not available_devices:
+                device_id = trigger.device_id or sheet.device_id
+                if device_id:
+                    device_validation = validate_device_before_send(self.db, str(device_id), user_id=str(triggered_by_user_id))
+                    if device_validation["valid"]:
+                        available_devices = [str(device_id)]
+            
+            if not available_devices:
+                logger.error(f"   ❌ No connected devices found for user {triggered_by_user_id}. Cannot process triggers.")
+                return
+
+            logger.info(f"🔄 [ROUND-ROBIN] Using {len(available_devices)} active devices: {available_devices}")
 
             processed_count = 0
             match_count = 0
-            logger.info(f"📊 [AUTOMATION] Scanning {len(rows_data)} rows for trigger conditions...")
+            device_index = 0
+            
+            logger.info(f"📊 [AUTOMATION] Scanning {len(rows_data)} rows...")
             
             for row in rows_data:
                 try:
-                    # Process row and get result (Dict[str, Any])
+                    # ✅ ROUND ROBIN: Pick next device
+                    active_device_id = available_devices[device_index % len(available_devices)]
+                    
+                    # Process row
                     res = await self.process_row_for_trigger(sheet, trigger, row, active_device_id, headers=headers_data)
                     
-                    # Log and track result if it's a dictionary
                     if isinstance(res, dict):
                         if res.get("match"):
                             match_count += 1
-                        if res.get("processed"):
-                            processed_count += 1
-                    else:
-                        logger.warning(f"   ⚠️ Row {row.get('row_number')} returned unexpected result type: {type(res)}")
+                            # Only increment device index and wait if we actually sent something
+                            if res.get("status") == "sent":
+                                device_index += 1
+                                processed_count += 1
+                                
+                                # 🔥 RANDOM DELAY: Wait between messages to avoid bot detection
+                                import random
+                                from core.config import settings
+                                # Use settings for delay (min 3s to max 15s for safety)
+                                delay = random.randint(settings.MIN_DELAY or 5, settings.WARM_MAX_DELAY or 15)
+                                logger.info(f"⏳ [SAFETY] Waiting {delay}s before next message...")
+                                await asyncio.sleep(delay)
+                    
                 except Exception as e:
                     logger.error(f"   ❌ Row {row.get('row_number')} error: {e}")
             
@@ -293,7 +274,7 @@ class GoogleSheetsAutomationServiceUnofficial:
             trigger.last_triggered_at = datetime.now(timezone.utc)
             self.db.commit()
             
-            logger.info(f"✅ [AUTOMATION] Trigger {trigger.trigger_id} complete: {match_count} matches, {processed_count} successfully processed.")
+            logger.info(f"✅ [AUTOMATION] Trigger {trigger.trigger_id} complete: {match_count} matches, {processed_count} sent.")
             
         except Exception as e:
             logger.error(f"   ❌ [AUTOMATION] Trigger {trigger.trigger_id} failed: {e}")
@@ -329,8 +310,12 @@ class GoogleSheetsAutomationServiceUnofficial:
                 already_handled_locally = False
                 for h in history_exists:
                     if h.row_data and h.row_data.get('row_number') == row_number:
-                        already_handled_locally = True
-                        break
+                        # 🔥 IMPROVEMENT: Only skip if it was successfully SENT
+                        # If it previously FAILED or EXPIRED, allow retry if time is updated
+                        if h.status == "sent":
+                            already_handled_locally = True
+                            break
+                
                 
                 if already_handled_locally:
                     # Log the skip clearly so the user knows WHY nothing is happening
@@ -375,6 +360,7 @@ class GoogleSheetsAutomationServiceUnofficial:
                     # So we just proceed to send this row if it doesn't have its own per-row Send_time column
                     if trigger.scheduled_at:
                         logger.info(f"   🎯 Row {row_number}: Processing via Global Schedule")
+                        send_time_value = trigger.scheduled_at
                     else:
                         # Fallback to old per-row column logic if global schedule is not set
                         send_time_value = self.get_case_insensitive_value(row_data, trigger.send_time_column)
@@ -460,20 +446,27 @@ class GoogleSheetsAutomationServiceUnofficial:
                         if not send_time:
                             raise ValueError(f"Could not parse time format: '{send_time_value}'")
                         
+                        # 🔥 FIX: If send_time is aware (from DB), convert it to IST first!
+                        if send_time.tzinfo is not None:
+                            # Convert to IST offset
+                            ist_tz = timezone(timedelta(hours=5, minutes=30))
+                            send_time = send_time.astimezone(ist_tz)
+                            send_time = send_time.replace(tzinfo=None)
+                            
                         logger.info(f"   Row {row_number}: Time Check -> Schedule: {send_time}, Current: {current_time_ist}")
 
                         if current_time_ist < send_time:
                             # logger.info(f"   Row {row_number}: Time {send_time} not reached yet. (IST: {current_time_ist})")
                             return {"processed": False, "reason": "time_not_reached"}
                             
-                        # 🔥 RELIABILITY FIX: Expand window to 120 seconds (2 mins) 
+                        # 🔥 RELIABILITY FIX: Expand window to 600 seconds (10 mins) 
                         # This prevents slow polling from missing rows.
-                        if current_time_ist > send_time + timedelta(seconds=120):
-                            logger.warning(f"   Row {row_number}: Time {send_time} has expired (passed by >120 secs). Will not send.")
+                        if current_time_ist > send_time + timedelta(seconds=600):
+                            logger.warning(f"   Row {row_number}: Time {send_time} has expired (passed by >600 secs). Will not send.")
                             
                             await self.create_trigger_history(
                                 sheet, trigger, row_number, "", "", TriggerHistoryStatus.FAILED, 
-                                f"Time expired (Buffer: 120s). Missed window for {send_time}",
+                                f"Time expired (Buffer: 600s). Missed window for {send_time}",
                                 device_id=device_id
                             )
                             # Update sheet status to Expired 
@@ -528,10 +521,26 @@ class GoogleSheetsAutomationServiceUnofficial:
                     else:
                         logger.warning(f"   Row {row_number}: Message column '{trigger.message_column}' not found. Available: {list(row_data.keys())}")
                 
+                # 🔥 RANDOM TEMPLATE SELECTION
                 if not message and trigger.message_template:
+                    # Support multiple templates: split by ||| or \n---\n
+                    import random
+                    templates_list = []
+                    if "|||" in trigger.message_template:
+                        templates_list = [t.strip() for t in trigger.message_template.split("|||") if t.strip()]
+                    elif "\n---\n" in trigger.message_template:
+                        templates_list = [t.strip() for t in trigger.message_template.split("\n---\n") if t.strip()]
+                    else:
+                        templates_list = [trigger.message_template.strip()]
+                    
+                    selected_template = random.choice(templates_list)
+                    if len(templates_list) > 1:
+                        logger.info(f"   🎲 Randomly picked template {templates_list.index(selected_template) + 1} of {len(templates_list)}")
+                    
                     # Use message template with row data
-                    message = self.sheets_service.process_message_template(trigger.message_template, row_data)
-                    logger.info(f"   📝 Using message template: '{message[:50]}...'")
+                    message = self.sheets_service.process_message_template(selected_template, row_data)
+                    logger.info(f"   📝 Selected message: '{message[:50]}...'")
+
                 
                 if not message:
                     # No message content available
@@ -700,7 +709,6 @@ class GoogleSheetsAutomationServiceUnofficial:
             from datetime import datetime
             history = GoogleSheetTriggerHistory(
                 sheet_id=sheet.id,
-                user_id=trigger.user_id,
                 trigger_id=str(trigger.trigger_id),  # ✅ Cast UUID to string
                 device_id=str(device_id or trigger.device_id), # ✅ Cast to string
                 phone_number=phone,

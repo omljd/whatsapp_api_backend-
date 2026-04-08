@@ -148,9 +148,12 @@ class DeviceSyncService:
                     logger.warning(f"⚠️ Skipping invalid device_id UUID: {device_id}")
                     continue
                 
-                # 🔥 PRODUCTION-GRADE FIX: Auto-link device to user
-                if device_uuid not in existing_device_ids:
-                    # Device exists in Engine but not in DB → Auto-create!
+                # 🔥 PRODUCTION-GRADE FIX: Auto-link/Update device to user
+                # First check if device exists GLOBALLY in DB to avoid UniqueViolation
+                db_device = db.query(Device).filter(Device.device_id == device_uuid).first()
+                
+                if not db_device:
+                    # Device DOES NOT EXIST anywhere → Auto-create!
                     logger.info(f"   🆕 Auto-creating device: {device_id}")
                     
                     try:
@@ -173,29 +176,30 @@ class DeviceSyncService:
                         logger.error(f"   ❌ Failed to create device {device_uuid}: {create_error}")
                         db.rollback()
                         continue
-                    
                 else:
-                    # Device exists in both → Update status
-                    db_device = next((d for d in existing_db_devices if str(d.device_id) == device_uuid), None)
+                    # Device ALREADY EXISTS globally → Update owner and status
+                    if str(db_device.busi_user_id) != str(user_id):
+                        old_user = db_device.busi_user_id
+                        db_device.busi_user_id = user_id
+                        logger.info(f"   👤 Re-linking device {device_id}: {old_user} -> {user_id}")
+                        
+                    # Map engine status to database status
+                    engine_status = engine_device.get("status", "unknown").lower()
+                    new_session_status = SessionStatus.disconnected
                     
-                    if db_device:
-                        # Map engine status to database status
-                        engine_status = engine_device.get("status", "unknown").lower()
-                        new_session_status = SessionStatus.disconnected
-                        
-                        if engine_status == "connected":
-                            new_session_status = SessionStatus.connected
-                        elif engine_status in ["qr_ready", "qr_generated", "scanning"]:
-                            new_session_status = SessionStatus.qr_ready
-                        elif engine_status == "connecting":
-                            new_session_status = SessionStatus.connecting
-                        
-                        if db_device.session_status != new_session_status:
-                            old_status = db_device.session_status
-                            db_device.session_status = new_session_status
-                            db_device.updated_at = datetime.utcnow()
-                            updated_devices.append(device_id)
-                            logger.info(f"   🔄 Device status updated: {device_id} ({old_status} -> {new_session_status})")
+                    if engine_status == "connected":
+                        new_session_status = SessionStatus.connected
+                    elif engine_status in ["qr_ready", "qr_generated", "scanning"]:
+                        new_session_status = SessionStatus.qr_ready
+                    elif engine_status == "connecting":
+                        new_session_status = SessionStatus.connecting
+                    
+                    if db_device.session_status != new_session_status:
+                        old_status = db_device.session_status
+                        db_device.session_status = new_session_status
+                        db_device.updated_at = datetime.utcnow()
+                        updated_devices.append(device_id)
+                        logger.info(f"   🔄 Device status updated: {device_id} ({old_status} -> {new_session_status})")
                 
                 synced_devices.append(device_uuid)
             

@@ -22,7 +22,7 @@ from models.admin import MasterAdmin
 from models.reseller import Reseller
 from models.google_sheet import GoogleSheet, GoogleSheetTrigger, GoogleSheetTriggerHistory, SheetStatus, TriggerType, TriggerHistoryStatus
 from models.device import Device
-from models.campaign import Campaign
+from models.campaign import Campaign, MessageLog
 from schemas.google_sheet import (
     GoogleSheetConnectRequest, GoogleSheetResponse,
     GoogleSheetRowsRequest, GoogleSheetRowResponse,
@@ -160,7 +160,7 @@ async def get_all_triggers_history_test(
                 "phone_number": h.phone_number,
                 "message_content": h.message_content,
                 "status": h.status,
-                "triggered_at": h.triggered_at.isoformat() if h.triggered_at else None,
+                "triggered_at": h.triggered_at.replace(tzinfo=timezone.utc).isoformat() if h.triggered_at and not h.triggered_at.tzinfo else (h.triggered_at.isoformat() if h.triggered_at else None),
                 "error_message": h.error_message,
                 "message_id": msg_id
             })
@@ -214,8 +214,8 @@ async def get_all_triggers(
                 "sheet_name": sheet_map.get(t.sheet_id, "Unknown Sheet"),
                 "trigger_type": t.trigger_type,
                 "is_enabled": t.is_enabled,
-                "last_triggered_at": t.last_triggered_at.isoformat() if t.last_triggered_at else None,
-                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "last_triggered_at": t.last_triggered_at.replace(tzinfo=timezone.utc).isoformat() if t.last_triggered_at and not t.last_triggered_at.tzinfo else (t.last_triggered_at.isoformat() if t.last_triggered_at else None),
+                "created_at": t.created_at.replace(tzinfo=timezone.utc).isoformat() if t.created_at and not t.created_at.tzinfo else (t.created_at.isoformat() if t.created_at else None),
             })
             
         return {
@@ -234,62 +234,86 @@ async def get_all_triggers_history(
     current_user: BusiUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get ALL trigger history for the current user."""
+    """Get ALL trigger and campaign history for the current user."""
     try:
-        # Get all sheets for user and convert to list to avoid SQLAlchemy SAWarning with subqueries
+        # --- 1. Fetch Google Sheet Trigger History ---
         user_sheets_query = db.query(GoogleSheet.id).filter(GoogleSheet.user_id == current_user.busi_user_id).all()
         user_sheet_ids = [s[0] for s in user_sheets_query]
         
-        # Get paginated history with join for sheet context
-        if not user_sheet_ids:
-            history = []
-        else:
-            history = db.query(
+        history_data = []
+        
+        if user_sheet_ids:
+            gs_history = db.query(
                 GoogleSheetTriggerHistory,
-                GoogleSheet.sheet_name,
-                GoogleSheet.spreadsheet_id
+                GoogleSheet.sheet_name
             ).join(
                 GoogleSheet, GoogleSheetTriggerHistory.sheet_id == GoogleSheet.id
             ).filter(
                 GoogleSheetTriggerHistory.sheet_id.in_(user_sheet_ids)
-            ).order_by(
-                GoogleSheetTriggerHistory.triggered_at.desc()
-            ).offset(
-                (page - 1) * per_page
-            ).limit(per_page).all()
-        
-        # Format response
-        history_data = []
-        for h, sheet_name, spreadsheet_id in history:
-            # Safely extract row_number and message_id from JSON row_data
-            row_num = h.row_data.get('row_number') if h.row_data else None
-            msg_id = h.row_data.get('message_id') if h.row_data else None
+            ).all()
 
-            history_data.append({
-                "id": str(h.id),
-                "trigger_id": str(h.trigger_id),
-                "sheet_id": str(h.sheet_id),
-                "sheet_name": sheet_name,
-                "spreadsheet_id": spreadsheet_id,
-                "device_id": str(h.device_id) if h.device_id else None,
-                "row_number": row_num,
-                "phone_number": h.phone_number,
-                "message_content": h.message_content,
-                "status": h.status.value if hasattr(h.status, 'value') else h.status,
-                "triggered_at": h.triggered_at.isoformat() if h.triggered_at else None,
-                "error_message": h.error_message,
-                "message_id": msg_id
-            })
+            for h, sheet_name in gs_history:
+                row_num = h.row_data.get('row_number') if h.row_data else None
+                msg_id = h.row_data.get('message_id') if h.row_data else None
+
+                history_data.append({
+                    "id": str(h.id),
+                    "source": sheet_name,
+                    "phone_number": h.phone_number,
+                    "message_content": h.message_content,
+                    "status": h.status.value if hasattr(h.status, 'value') else h.status,
+                    "triggered_at": h.triggered_at.replace(tzinfo=timezone.utc).isoformat() if h.triggered_at and not h.triggered_at.tzinfo else (h.triggered_at.isoformat() if h.triggered_at else None),
+                    "row_number": f"#{row_num}" if row_num else "-",
+                    "device_id": str(h.device_id) if h.device_id else None,
+                    "error_message": h.error_message,
+                    "type": "google_sheet"
+                })
+
+        # --- 2. Fetch Campaign (CSV/Excel) History ---
+        # Get all campaigns for this user
+        user_campaigns = db.query(Campaign).filter(Campaign.busi_user_id == current_user.busi_user_id).all()
+        campaign_ids = [c.id for c in user_campaigns]
+        campaign_map = {c.id: c.name or f"Campaign {str(c.id)[:8]}" for c in user_campaigns}
+
+        if campaign_ids:
+            camp_logs = db.query(MessageLog).filter(
+                MessageLog.campaign_id.in_(campaign_ids)
+            ).all()
+
+            for log in camp_logs:
+                history_data.append({
+                    "id": str(log.id),
+                    "source": campaign_map.get(log.campaign_id, "File Campaign"),
+                    "phone_number": log.recipient,
+                    "message_content": "(Campaign Message)", # Message content is template-based, not stored in log
+                    "status": "sent" if "success" in log.status.lower() else "failed",
+                    "triggered_at": log.created_at.replace(tzinfo=timezone.utc).isoformat() if log.created_at and not log.created_at.tzinfo else (log.created_at.isoformat() if log.created_at else None),
+                    "row_number": "-", 
+                    "device_id": str(log.device_id) if log.device_id else None,
+                    "error_message": log.status if "failed" in log.status.lower() else None,
+                    "type": "file"
+                })
+
+        # --- 3. Sort and Paginate ---
+        # Sort by triggered_at descending
+        history_data.sort(key=lambda x: x.get('triggered_at') or '', reverse=True)
+        
+        # Paginate manually (since we merged lists)
+        total = len(history_data)
+        start = (page - 1) * per_page
+        end = start + per_page
+        paginated_data = history_data[start:end]
         
         return {
             "success": True,
-            "data": history_data,
+            "data": paginated_data,
             "pagination": {
                 "page": page,
                 "per_page": per_page,
-                "total": len(history_data)
+                "total": total
             }
         }
+
         
     except Exception as e:
         logger.error(f"Error getting trigger history: {e}")
@@ -2210,7 +2234,7 @@ async def sync_sheet(
         # TODO: Implement actual sync with Google Sheets API
         # For now, just update the last_synced_at timestamp
         
-        sheet.last_synced_at = datetime.utcnow()
+        sheet.last_synced_at = datetime.now(timezone.utc)
         sheet.rows_count = 100  # Mock row count
         
         db.commit()
@@ -2291,7 +2315,7 @@ async def check_triggers_on_demand(
             "sheet_name": sheet.sheet_name,
             "rows_processed": len(rows_data),
             "columns_found": len(headers_data),
-            "processed_at": datetime.utcnow().isoformat(),
+            "processed_at": datetime.now(timezone.utc).isoformat(),
             "performance_note": "Sheet data fetched once and reused for all triggers",
             "background_polling": "Disabled - runs on-demand only"
         }

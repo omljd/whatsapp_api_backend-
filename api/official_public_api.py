@@ -15,8 +15,8 @@ Do NOT:
 
 import logging
 import uuid
-from datetime import datetime
-from typing import Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Query, Body, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -847,7 +847,7 @@ async def public_check_config(
                 "active": device.is_active and is_service_active,
                 "device_id": device_id,
                 "device_status": actual_status,
-                "created_at": device.created_at.isoformat() if device.created_at else None,
+                "created_at": device.created_at.replace(tzinfo=timezone.utc).isoformat() if device.created_at and not device.created_at.tzinfo else (device.created_at.isoformat() if device.created_at else None),
                 "business_status": business_status
             }
             
@@ -921,7 +921,7 @@ async def get_templates(
                         "device_id": device_id,
                         "templates": templates,
                         "total_count": len(templates),
-                        "retrieved_at": datetime.now().isoformat()
+                        "retrieved_at": datetime.now(timezone.utc).isoformat()
                     }
                 else:
                     error_msg = f"Meta API error: {response.status_code} - {response.text}"
@@ -1052,7 +1052,7 @@ async def send_template(
                         "template_name": template_name,
                         "language_code": language_code,
                         "template_params": params,
-                        "sent_at": datetime.now().isoformat(),
+                        "sent_at": datetime.now(timezone.utc).isoformat(),
                         "status": "sent"
                     }
                 else:

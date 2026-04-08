@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 import logging
 from uuid import UUID
+from datetime import datetime, timezone
 
 from db.session import get_db
 from schemas.device import DeviceResponse as DeviceModelResponse, DeviceCreate, DeviceRegisterRequest, DeviceType, DeviceListResponse
@@ -328,11 +329,11 @@ async def get_official_devices(
                 "device_name": device.device_name,
                 "device_type": device.device_type.value,
                 "session_status": current_status.value,
-                "qr_last_generated": device.qr_last_generated.isoformat() if device.qr_last_generated else None,
+                "qr_last_generated": device.qr_last_generated.replace(tzinfo=timezone.utc).isoformat() if device.qr_last_generated and not device.qr_last_generated.tzinfo else (device.qr_last_generated.isoformat() if device.qr_last_generated else None),
                 "ip_address": device.ip_address,
-                "last_active": device.last_active.isoformat() if device.last_active else None,
-                "created_at": device.created_at.isoformat() if device.created_at else None,
-                "updated_at": device.updated_at.isoformat() if device.updated_at else None
+                "last_active": device.last_active.replace(tzinfo=timezone.utc).isoformat() if device.last_active and not device.last_active.tzinfo else (device.last_active.isoformat() if device.last_active else None),
+                "created_at": device.created_at.replace(tzinfo=timezone.utc).isoformat() if device.created_at and not device.created_at.tzinfo else (device.created_at.isoformat() if device.created_at else None),
+                "updated_at": device.updated_at.replace(tzinfo=timezone.utc).isoformat() if device.updated_at and not device.updated_at.tzinfo else (device.updated_at.isoformat() if device.updated_at else None)
             })
         
         return {
@@ -388,11 +389,11 @@ async def get_unofficial_devices(
                 "device_name": device.device_name,
                 "device_type": device.device_type.value,
                 "session_status": device.session_status.value,
-                "qr_last_generated": device.qr_last_generated.isoformat() if device.qr_last_generated else None,
+                "qr_last_generated": device.qr_last_generated.replace(tzinfo=timezone.utc).isoformat() if device.qr_last_generated and not device.qr_last_generated.tzinfo else (device.qr_last_generated.isoformat() if device.qr_last_generated else None),
                 "ip_address": device.ip_address,
-                "last_active": device.last_active.isoformat() if device.last_active else None,
-                "created_at": device.created_at.isoformat() if device.created_at else None,
-                "updated_at": device.updated_at.isoformat() if device.updated_at else None
+                "last_active": device.last_active.replace(tzinfo=timezone.utc).isoformat() if device.last_active and not device.last_active.tzinfo else (device.last_active.isoformat() if device.last_active else None),
+                "created_at": device.created_at.replace(tzinfo=timezone.utc).isoformat() if device.created_at and not device.created_at.tzinfo else (device.created_at.isoformat() if device.created_at else None),
+                "updated_at": device.updated_at.replace(tzinfo=timezone.utc).isoformat() if device.updated_at and not device.updated_at.tzinfo else (device.updated_at.isoformat() if device.updated_at else None)
             })
         
         return {

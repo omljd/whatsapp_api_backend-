@@ -201,16 +201,10 @@ async def receive_whatsapp_status(payload: Dict[str, Any], db: Session = Depends
         final_status = status_map.get(str(status), status)
         
         # Update the Message table (Delivery Reports)
-        message = db.query(Message).filter(Message.engine_message_id == msg_id).first()
+        message = db.query(Message).filter(Message.message_id == msg_id).first()
         if message:
-            message.delivery_status = final_status
-            if final_status == "delivered":
-                 message.delivered_at = datetime.now(timezone.utc)
-            elif final_status == "read":
-                 if not message.delivered_at:
-                      message.delivered_at = datetime.now(timezone.utc)
-                 message.read_at = datetime.now(timezone.utc)
-            
+            # Normalize to uppercase for Enum matching
+            message.status = final_status.upper()
             db.commit()
             return {"status": "success", "action": "status_updated", "message_id": msg_id}
             

@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from jose import jwt, JWTError
 
+from datetime import datetime, timezone
 from db.session import get_db
 from api.auth import get_current_user
 from core.security import SECRET_KEY, ALGORITHM
@@ -196,19 +197,41 @@ async def start_campaign(
                 if not sheet:
                     raise HTTPException(status_code=404, detail="Google Sheet metadata not found")
 
-                rows_data, _ = sheets_service.get_sheet_data_with_headers(
+                rows_data, headers = sheets_service.get_sheet_data_with_headers(
                     spreadsheet_id=sheet.spreadsheet_id, 
                     worksheet_name=sheet.worksheet_name or "Sheet1",
                     credentials=creds
                 )
                 
+                # 🔥 SMART PHONE DETECTION: Look for common column names
                 phone_col = "phone"
                 if sheet.trigger_config and isinstance(sheet.trigger_config, dict):
                     phone_col = sheet.trigger_config.get("phone_column", phone_col)
+                
+                # Check headers to find the best candidate if the default fails
+                if rows_data and headers:
+                    headers_lower = [str(h).lower().strip() for h in headers]
+                    phone_keywords = ['phone', 'mobile', 'number', 'contact', 'recipient', 'to', 'whatsapp', 'मोबाईल', 'फोन']
                     
+                    found_col = None
+                    # Try to find best match from keywords
+                    for kw in phone_keywords:
+                        if kw in headers_lower:
+                            idx = headers_lower.index(kw)
+                            found_col = headers[idx]
+                            break
+                    
+                    if found_col:
+                        phone_col = found_col
+                    elif headers:
+                        # Fallback to FIRST column if no phone column found (likely what the user intended)
+                        phone_col = headers[0]
+                        logger.warning(f"⚠️ Could not identify phone column. Defaulting to first column: {phone_col}")
+
                 for row in rows_data:
                     data = row.get("data", {})
-                    actual_phone = data.get(phone_col) or data.get("Phone") or data.get("Phone Number")
+                    # Try specific phone_col, then general fallbacks
+                    actual_phone = data.get(phone_col) or data.get("Phone") or data.get("Phone Number") or data.get("Mobile")
                     
                     if not actual_phone:
                         continue
@@ -339,7 +362,7 @@ async def get_campaign_logs(
                     "recipient": l.recipient,
                     "status": l.status,
                     "retry_count": l.retry_count,
-                    "created_at": l.created_at.isoformat() if l.created_at else None,
+                    "created_at": l.created_at.replace(tzinfo=timezone.utc).isoformat() if l.created_at and not l.created_at.tzinfo else (l.created_at.isoformat() if l.created_at else None),
                     "device_id": str(l.device_id) if l.device_id else None
                 } for l in logs
             ]

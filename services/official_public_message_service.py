@@ -33,6 +33,7 @@ from models.official_whatsapp_config import OfficialWhatsAppConfig
 from datetime import datetime
 from utils.phone_utils import normalize_phone
 from services.message_usage_service import MessageUsageService
+from models.message import Message, MessageStatus, MessageType, ChannelType, MessageMode
 
 logger = logging.getLogger(__name__)
 
@@ -280,14 +281,34 @@ class OfficialPublicMessageService:
                         message_id = api_response.get("messages", [{}])[0].get("id")
                         logger.info(f"Message sent successfully via WhatsApp API: {message_id}")
                         
-                        # 🔥 DEDUCT CREDITS
+                        # 🔥 CREATE MESSAGE RECORD & DEDUCT CREDITS
                         try:
+                            # 1. Create history record for analytics
+                            db_message = Message(
+                                message_id=message_id,
+                                busi_user_id=str(device.busi_user_id),
+                                channel=ChannelType.WHATSAPP,
+                                mode=MessageMode.OFFICIAL,
+                                sender_number=str(device.device_id),
+                                receiver_number=phone_number,
+                                message_type=MessageType.TEXT,
+                                message_body=message,
+                                status=MessageStatus.SENT,
+                                credits_used=1,
+                                sent_at=datetime.now()
+                            )
+                            self.db.add(db_message)
+                            
+                            # 2. Deduct wallet credits
                             self.message_usage_service.deduct_credits(
                                 busi_user_id=str(device.busi_user_id),
                                 message_id=message_id
                             )
-                        except Exception as credit_err:
-                            logger.error(f"⚠️ Credit deduction failed for public message: {str(credit_err)}")
+                            self.db.commit()
+                        except Exception as log_err:
+                            logger.error(f"⚠️ Failed to log official message or deduct credits: {str(log_err)}")
+                            # Don't fail the entire request if just logging failed
+                            self.db.rollback()
 
                         return {
                             "success": True,
@@ -490,15 +511,34 @@ class OfficialPublicMessageService:
                         message_id = api_response.get("messages", [{}])[0].get("id")
                         logger.info(f"Media sent successfully via WhatsApp API: {message_id}")
                         
-                        # 🔥 DEDUCT CREDITS
+                        # 🔥 CREATE MESSAGE RECORD & DEDUCT CREDITS
                         try:
-                            # We need to find the user_id from the device
+                            # 1. Create history record for analytics
+                            message_id_real = message_id or f"media-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                            db_message = Message(
+                                message_id=message_id_real,
+                                busi_user_id=str(device.busi_user_id),
+                                channel=ChannelType.WHATSAPP,
+                                mode=MessageMode.OFFICIAL,
+                                sender_number=str(device.device_id),
+                                receiver_number=phone_number,
+                                message_type=MessageType.MEDIA,
+                                message_body=caption or "[Media Message]",
+                                status=MessageStatus.SENT,
+                                credits_used=1,
+                                sent_at=datetime.now()
+                            )
+                            self.db.add(db_message)
+
+                            # 2. Deduct wallet credits
                             self.message_usage_service.deduct_credits(
                                 busi_user_id=str(device.busi_user_id),
-                                message_id=message_id
+                                message_id=message_id_real
                             )
-                        except Exception as credit_err:
-                            logger.error(f"⚠️ Credit deduction failed for public media: {str(credit_err)}")
+                            self.db.commit()
+                        except Exception as log_err:
+                            logger.error(f"⚠️ Failed to log official media message or deduct credits: {str(log_err)}")
+                            self.db.rollback()
 
                         return {
                             "success": True,

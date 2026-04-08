@@ -325,30 +325,65 @@ async def get_dashboard_graph_data(
         extract('year', MessageLog.created_at) == current_year
     )
 
+    # 3. Query from usage logs to ensure "Sent" count matches the Wallet card
+    from models.message_usage import MessageUsageCreditLog
+    from sqlalchemy import func
+    q3 = db.query(
+        extract('month', MessageUsageCreditLog.timestamp).label('month'),
+        func.sum(MessageUsageCreditLog.credits_deducted).label('sent_count')
+    ).filter(
+        MessageUsageCreditLog.busi_user_id == str(user_uuid),
+        MessageUsageCreditLog.credits_deducted > 0,
+        extract('year', MessageUsageCreditLog.timestamp) == current_year
+    ).group_by(extract('month', MessageUsageCreditLog.timestamp))
+
     # Fetch all raw data for aggregation in Python (safer for mixed DB environments like SQLite/PG)
     messages_rows = q1.all()
     campaign_rows = q2.all()
+    usage_rows = q3.all()
     
     # Initialize 12 months with zeros
     monthly_stats = {i: {"sent": 0, "delivered": 0} for i in range(1, 13)}
     
-    def aggregate_row(row):
+    def aggregate_row(row, count_sent=True):
         try:
             m = int(row.month)
             if 1 <= m <= 12:
-                monthly_stats[m]["sent"] += 1
-                # Check status (supports both MessageStatus and campaign log strings)
+                # Normalize status for robust matching
                 status_str = str(row.status or "").upper()
-                if status_str in ['SENT', 'DELIVERED', 'READ', 'SUCCESS', 'MESSAGESTATUS.SENT', 'MESSAGESTATUS.DELIVERED', 'MESSAGESTATUS.READ']:
-                    # We consider Sent/Delivered/Read as "sent" (total)
-                    # And Delivered/Read/Success as "delivered" specifically
-                    if status_str in ['DELIVERED', 'READ', 'SUCCESS', 'MESSAGESTATUS.DELIVERED', 'MESSAGESTATUS.READ']:
+                
+                # Group 1: All successfully dispatched messages (Counted in 'Sent' line)
+                # Filter out PENDING, FAILED, or empty statuses
+                is_valid_sent = status_str in ['SENT', 'DELIVERED', 'READ', 'SUCCESS'] or 'MESSAGESTATUS.' in status_str
+                
+                if is_valid_sent:
+                    if count_sent:
+                        monthly_stats[m]["sent"] += 1
+                    
+                    # Group 2: Messages that reached the recipient (Counted in 'Delivered' line)
+                    # For Unofficial WhatsApp, 'SENT' from server often implies it was delivered to the device's send queue.
+                    # We include 'SENT' here so the graph doesn't show 0 delivered when sending is active.
+                    is_delivered = status_str in ['DELIVERED', 'READ', 'SUCCESS', 'SENT'] or \
+                                   'MESSAGESTATUS.DELIVERED' in status_str or \
+                                   'MESSAGESTATUS.READ' in status_str or \
+                                   'MESSAGESTATUS.SENT' in status_str
+                    
+                    if is_delivered:
                         monthly_stats[m]["delivered"] += 1
         except (ValueError, TypeError, AttributeError):
             pass
 
-    for r in messages_rows: aggregate_row(r)
-    for r in campaign_rows: aggregate_row(r)
+    for r in messages_rows: aggregate_row(r, count_sent=False)
+    for r in campaign_rows: aggregate_row(r, count_sent=False)
+
+    # Populate final 'sent' counts from usage logs for total consistency
+    for r in usage_rows:
+        try:
+            m = int(r.month)
+            if 1 <= m <= 12:
+                monthly_stats[m]["sent"] = r.sent_count
+        except:
+            pass
     
     # Format for frontend chart
     month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]

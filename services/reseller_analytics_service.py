@@ -161,19 +161,20 @@ class ResellerAnalyticsService:
         """
         [AGGREGATE GRAPH] Aggregates all messages from all business users 
         belonging to this reseller, grouped by month for the current year.
+        Source: MessageUsageCreditLog for highest accuracy.
         """
         current_year = datetime.now().year
         
         try:
+            # Query MessageUsageCreditLog joined with BusiUser to filter by reseller
             stats = self.db.query(
-                extract('month', Message.sent_at).label('month'),
-                func.count(Message.message_id).label('total'),
-                func.count(Message.message_id).filter(Message.status.in_(['DELIVERED', 'READ'])).label('delivered')
+                extract('month', MessageUsageCreditLog.timestamp).label('month'),
+                func.count(MessageUsageCreditLog.usage_id).label('total')
             ).join(
-                BusiUser, BusiUser.busi_user_id == Message.busi_user_id
+                BusiUser, BusiUser.busi_user_id == MessageUsageCreditLog.busi_user_id
             ).filter(
                 BusiUser.parent_reseller_id == reseller_id,
-                extract('year', Message.sent_at) == current_year
+                extract('year', MessageUsageCreditLog.timestamp) == current_year
             ).group_by('month').order_by('month').all()
             
             month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -185,9 +186,12 @@ class ResellerAnalyticsService:
                 result.append({
                     "name": month_names[i-1],
                     "sent": month_stat.total if month_stat else 0,
-                    "delivered": month_stat.delivered if month_stat else 0
+                    "delivered": 0 # User requested to remove delivery line, keeping key for contract compatibility
                 })
             return result
+        except Exception as e:
+            logger.error(f"Error in get_reseller_graph_data: {e}")
+            return []
         except Exception as e:
             logger.error(f"Error in get_reseller_graph_data: {e}")
             return []
